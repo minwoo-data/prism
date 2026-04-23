@@ -85,7 +85,7 @@ This means cheap consensus passes through fast, and only borderline findings pay
 /prism .                                    # whole-project review
 ```
 
-Natural language also works: *"prism 돌려"*, *"full review"*, *"design review"*.
+Natural language also works: *"full review"*, *"design review"*. (Korean triggers available; see the Korean README.)
 
 ## Output
 
