@@ -95,13 +95,21 @@ Verifier는 **단일 batched 호출** (finding당 1번 X). 20개 singleton이든
 
 ## 설치
 
-스킬 디렉토리에 SKILL.md 드롭:
+### 1. haroom_plugin 마켓플레이스 등록 (처음 한 번만)
 
 ```
-~/.claude/skills/prism/SKILL.md
+/plugin marketplace add https://github.com/minwoo-data/haroom_plugin.git
 ```
 
-또는 `commands/prism.md`를 `.claude/commands/` (프로젝트별) 또는 `~/.claude/commands/` (글로벌)에 두면 슬래시 명령으로 사용 가능.
+`prism` 은 haroom 플러그인 (ddaro, triad, mangchi) 과 함께 **haroom_plugin** aggregator 를 통해 배포됩니다.
+
+### 2. 플러그인 설치
+
+```
+/plugin install prism
+```
+
+설치 후 Claude Code 재시작.
 
 ## Created by
 

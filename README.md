@@ -102,13 +102,21 @@ The verifier runs in **a single batched call** (not one-per-finding), so 20 sing
 
 ## Install
 
-Drop the skill into your Claude Code skills directory:
+### 1. Add the haroom_plugin marketplace (one time)
 
 ```
-~/.claude/skills/prism/SKILL.md
+/plugin marketplace add https://github.com/minwoo-data/haroom_plugin.git
 ```
 
-Or wire as a slash command via `commands/prism.md` (Claude Code reads it from `.claude/commands/` per project, or `~/.claude/commands/` globally).
+`prism` is distributed through the **haroom_plugin** aggregator along with the other haroom plugins (ddaro, triad, mangchi).
+
+### 2. Install
+
+```
+/plugin install prism
+```
+
+Restart Claude Code after install.
 
 ## Created by
 

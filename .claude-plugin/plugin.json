@@ -1,0 +1,22 @@
+{
+  "name": "prism",
+  "version": "0.1.0",
+  "description": "Multi-angle code review — 5 parallel agents discover findings, then a Verifier pass cross-checks singleton findings. Agreement auto-confirms. Use before major decisions or when you want a paranoid, wide-coverage review.",
+  "author": {
+    "name": "Minwoo Park",
+    "url": "https://github.com/minwoo-data"
+  },
+  "homepage": "https://github.com/minwoo-data/prism",
+  "repository": "https://github.com/minwoo-data/prism",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "code-review",
+    "multi-agent",
+    "parallel",
+    "verification",
+    "prism"
+  ],
+  "commands": "./commands/",
+  "skills": "./skills/"
+}
