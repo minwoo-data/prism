@@ -145,6 +145,10 @@ The verifier runs in **a single batched call** (not one-per-finding), so 20 sing
 
 Restart Claude Code after install.
 
+## Updates
+
+- **2026-04-24** — Codex CLI `gpt-5.4` → `gpt-5.5` migration notes and benchmark, written up in the triad plugin ([triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md)). Relevant if you pair prism with any Codex-backed review skill.
+
 ## Created by
 
 haroom

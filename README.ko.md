@@ -138,6 +138,10 @@ Verifier는 **단일 batched 호출** (finding당 1번 X). 20개 singleton이든
 
 설치 후 Claude Code 재시작.
 
+## 업데이트
+
+- **2026-04-24** — Codex CLI `gpt-5.4` → `gpt-5.5` 마이그레이션 기록 및 벤치마크. 상세 문서는 triad 플러그인에 있음 ([triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md)). prism을 Codex 기반 리뷰와 병용할 때 참고.
+
 ## Created by
 
 haroom
