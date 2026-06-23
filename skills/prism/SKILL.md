@@ -1,12 +1,12 @@
 ---
 name: prism
-description: Multi-angle review - 5 agents in parallel discover, then a Verifier pass cross-checks singleton findings. Agreement auto-confirms. Use when user says "prism", "prism 돌려", "prism <file>", "full review", "design review", or before major decisions.
+description: Multi-angle review — 5 agents in parallel discover, then a Verifier pass cross-checks singleton findings. Agreement auto-confirms. Use when user says "prism", "prism 돌려", "prism <file>", "full review", "design review", or before major decisions.
 argument-hint: "[file-or-topic] [--quick] [--adversarial]"
 context: fork
 user-invocable: true
 ---
 
-# Prism - Multi-Angle Review with Verification
+# Prism — Multi-Angle Review with Verification
 
 > 5 agents look through different facets. The Verifier cross-checks anything only one agent saw. Agreement passes through; singletons get scrutinized.
 
@@ -15,7 +15,7 @@ user-invocable: true
 | Invocation | Behavior |
 |---|---|
 | `/prism <target>` | **Default: 2-pass verify.** Pass 1 finds, Pass 2 verifies singletons. |
-| `/prism <target> --quick` | 1 pass only. Skip verification - use when speed > signal. |
+| `/prism <target> --quick` | 1 pass only. Skip verification — use when speed > signal. |
 | `/prism <target> --adversarial` | 1 pass + REJECT re-check. Re-examines findings you'd dismiss, catching self-bias. |
 | `prism 돌려`, `prism <file>` | Same as `/prism <target>` (default verify). |
 
@@ -28,7 +28,7 @@ user-invocable: true
 
 ---
 
-## Pass 1 - Parallel discovery (5 agents)
+## Pass 1 — Parallel discovery (5 agents)
 
 Launch all 5 agents in a **single message** with multiple Agent tool calls. Each runs in a forked context.
 
@@ -58,12 +58,12 @@ Launch all 5 agents in a **single message** with multiple Agent tool calls. Each
 
 ### Agent 5: Robustness (4-Axis)
 
-> You are a **Robustness Agent**. Evaluate the target against 4 orthogonal failure axes. For each axis, enumerate concrete scenarios specific to this code/design (not generic advice). If an axis has no realistic concern, say "N/A - <reason>".
+> You are a **Robustness Agent**. Evaluate the target against 4 orthogonal failure axes. For each axis, enumerate concrete scenarios specific to this code/design (not generic advice). If an axis has no realistic concern, say "N/A — <reason>".
 >
-> **Axis 1 - Concurrency**: Two users/requests/workers hit this at once. Race conditions, double-submit, lost update, duplicate inserts, lock contention, TOCTOU.
-> **Axis 2 - Failure & Recovery**: Operation interrupted mid-flight (crash, network drop, timeout, partial write). Idempotency, retry safety, rollback, orphaned state, compensating actions.
-> **Axis 3 - Data Integrity**: FK cascade direction (CASCADE/RESTRICT/SET NULL), unique/CHECK constraints, referential consistency, overwrite semantics (upsert vs replace vs merge), schema version mismatch.
-> **Axis 4 - State Transitions**: Every reachable state and every transition. Forward (A→B), reversal (B→A), forbidden transitions, terminal/stuck states, re-entry after failure.
+> **Axis 1 — Concurrency**: Two users/requests/workers hit this at once. Race conditions, double-submit, lost update, duplicate inserts, lock contention, TOCTOU.
+> **Axis 2 — Failure & Recovery**: Operation interrupted mid-flight (crash, network drop, timeout, partial write). Idempotency, retry safety, rollback, orphaned state, compensating actions.
+> **Axis 3 — Data Integrity**: FK cascade direction (CASCADE/RESTRICT/SET NULL), unique/CHECK constraints, referential consistency, overwrite semantics (upsert vs replace vs merge), schema version mismatch.
+> **Axis 4 — State Transitions**: Every reachable state and every transition. Forward (A→B), reversal (B→A), forbidden transitions, terminal/stuck states, re-entry after failure.
 >
 > Format per finding: `[Axis N] Scenario → Current behavior → Risk (CRITICAL/HIGH/MEDIUM/LOW) → Suggested fix`
 > End with a **Coverage Summary**: which axes have gaps, which are well-handled.
@@ -74,8 +74,8 @@ Launch all 5 agents in a **single message** with multiple Agent tool calls. Each
 
 After all 5 agents return, classify every finding:
 
-- **AGREEMENT** - flagged by 2+ agents (semantic overlap counts, not exact wording). These are **auto-CONFIRMED**; they skip Pass 2.
-- **SINGLETON** - flagged by exactly 1 agent. Eligible for Pass 2 verification.
+- **AGREEMENT** — flagged by 2+ agents (semantic overlap counts, not exact wording). These are **auto-CONFIRMED**; they skip Pass 2.
+- **SINGLETON** — flagged by exactly 1 agent. Eligible for Pass 2 verification.
 
 Short-circuit rules:
 - If `--quick` flag set → skip Pass 2. Go straight to final report (label everything by source agent, no verify label).
@@ -84,9 +84,9 @@ Short-circuit rules:
 
 ---
 
-## Pass 2 - Singleton verification (default mode)
+## Pass 2 — Singleton verification (default mode)
 
-**One Verifier Agent handles ALL singletons in a single call** - do not spawn one agent per finding (wasteful).
+**One Verifier Agent handles ALL singletons in a single call** — do not spawn one agent per finding (wasteful).
 
 Spawn a general-purpose agent with this prompt:
 
@@ -96,7 +96,7 @@ Spawn a general-purpose agent with this prompt:
 > - Read the full target (provided below) and the full output of all 5 Pass 1 agents before verdicting.
 > - For each singleton, output one of: `CONFIRMED` / `REJECTED` / `DEPENDS`.
 > - `CONFIRMED`: the finding is valid. You may lower severity if the original rating seems inflated.
-> - `REJECTED`: the finding is wrong - typically the reviewer lacked context. State which context made the difference.
+> - `REJECTED`: the finding is wrong — typically the reviewer lacked context. State which context made the difference.
 > - `DEPENDS`: the finding is conditional. State the condition and whether it likely holds here.
 > - Do NOT invent new findings. Your job is verification, not discovery.
 >
@@ -107,10 +107,10 @@ Spawn a general-purpose agent with this prompt:
 >   original_severity: CRITICAL|HIGH|MEDIUM|LOW
 >   verdict: CONFIRMED|REJECTED|DEPENDS
 >   adjusted_severity: <same format, only if CONFIRMED>
->   reasoning: "1-2 sentence justification"
+>   reasoning: "1–2 sentence justification"
 > ```
 >
-> Inputs follow: [target content] [Pass 1 outputs - all 5 agents] [singleton list with IDs]
+> Inputs follow: [target content] [Pass 1 outputs — all 5 agents] [singleton list with IDs]
 
 ### Adversarial mode (`--adversarial`)
 
@@ -123,7 +123,7 @@ Instead of (or in addition to) singleton verification, re-examine findings you w
 ## Final report
 
 ```
-PRISM REPORT - {target} - {timestamp}
+PRISM REPORT — {target} — {timestamp}
 Mode: {verify | quick | adversarial}
 
 ## CRITICAL (must fix)
@@ -141,10 +141,10 @@ Mode: {verify | quick | adversarial}
 
 ## Rejected Singletons   ← only if Pass 2 ran
 Findings one agent flagged but the Verifier dismissed. Listed for transparency.
-- [source agent] Finding - Verifier: reasoning
+- [source agent] Finding — Verifier: reasoning
 
 ## Depends-on-Context    ← only if Verifier returned DEPENDS
-- [source agent] Finding - Condition: ... - Likely in this project? yes/no/unclear
+- [source agent] Finding — Condition: ... — Likely in this project? yes/no/unclear
 
 ## Cross-Agent Agreements
 Items where 2+ agents converged. Highest-confidence bucket.
@@ -161,7 +161,7 @@ Numbered list, highest impact first. Mix confirmed agreements + verified singlet
 - `[1/5 → verified]` → singleton that passed Pass 2.
 - `[1/5 → rejected]` → moved to "Rejected Singletons" section.
 - `[1/5 → depends]` → moved to "Depends-on-Context" section.
-- In `--quick` mode, drop the verification annotations - just `[source agent]`.
+- In `--quick` mode, drop the verification annotations — just `[source agent]`.
 
 ---
 
@@ -169,7 +169,7 @@ Numbered list, highest impact first. Mix confirmed agreements + verified singlet
 
 - Each Pass 1 agent runs with `context: fork`; the main context stays clean.
 - Pass full target content to each agent. Never summarize the input.
-- If two agents return contradicting advice, surface both under "Disagreements" - do not pick a winner unless the Verifier ran and resolved it.
+- If two agents return contradicting advice, surface both under "Disagreements" — do not pick a winner unless the Verifier ran and resolved it.
 - Keep synthesis concise: max 3 lines per finding.
 - Verifier runs in a **single call** covering all singletons, not one-per-finding.
 - Agreement bucket is cheap signal; trust it more than any single agent's judgment.
@@ -179,13 +179,13 @@ Numbered list, highest impact first. Mix confirmed agreements + verified singlet
 | Mode | Pass 1 agents | Pass 2 calls | Relative cost | When to use |
 |---|---|---|---|---|
 | `--quick` | 5 | 0 | 1.0× | Fast sanity check, already-triaged targets |
-| default (verify) | 5 | 1 (batched) | 1.2-1.4× | Standard review, most cases |
-| `--adversarial` | 5 | 1 (batched) | 1.2-1.4× | When you suspect you'll dismiss real issues |
+| default (verify) | 5 | 1 (batched) | 1.2–1.4× | Standard review, most cases |
+| `--adversarial` | 5 | 1 (batched) | 1.2–1.4× | When you suspect you'll dismiss real issues |
 
-Default is verify because false positives from a single agent are the most common failure mode - and batched verification is cheap.
+Default is verify because false positives from a single agent are the most common failure mode — and batched verification is cheap.
 
 ## Companion skills
 
-- **mangchi** - after prism identifies weak files, use `/mangchi <file>` to iteratively harden one file with Codex cross-model review.
-- **triad** - for markdown/spec review (not code), use `/triad <file>` for 3-perspective deliberation.
-- **gsd-discuss-phase** - for upstream design decisions (before code exists), the 4-axis robustness probe runs there.
+- **mangchi** — after prism identifies weak files, use `/mangchi <file>` to iteratively harden one file with Codex cross-model review.
+- **triad** — for markdown/spec review (not code), use `/triad <file>` for 3-perspective deliberation.
+- **gsd-discuss-phase** — for upstream design decisions (before code exists), the 4-axis robustness probe runs there.
