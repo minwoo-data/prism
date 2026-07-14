@@ -79,11 +79,11 @@ user-invocable: true
 
 ## Pass 1 — 10 병렬 발사
 
-**한 메시지 안에서 전부 병렬**:
-- Claude 5개: `Agent` tool × 5 (Conflict/Improvement/Devil/CodeReview/Robustness), forked context
-- Codex 5개: `Bash` tool × 1 (내부 5개 순차 Codex CLI). 전체 Bash는 Claude Agent와 **병렬**
+**한 메시지 안에서 전부 병렬** (기본 DEFECT 렌즈 — `--lenses=classic`일 때만 구 이름):
+- Claude 5개: `Agent` tool × 5 (Correctness / Security / State / Integration / Testability), forked context. `--include-improvements` 시 6번째(Improvement) 추가.
+- Codex 5개: **각도당 별도 `Bash` 호출**(한 Bash에 5개 순차 금지 — 외부 타임아웃·부분 hang 시 뒷 각도가 파일 없이 통째로 유실됨, robustness A1-2/A2-3). 발사 전 5개 `$OUT`를 `[fallback: not-started]`로 미리 생성 → 안 채워진 각도 = degraded로 확정.
 
-Wall time ≈ max(Claude 5 parallel ≈ 20~40s, Codex 5 sequential ≈ 100~200s) = **Codex 쪽 병목** (~100~200s).
+Wall time ≈ max(Claude 5 parallel ≈ 20~40s, Codex 5 (각도별 병렬/순차) ≈ 100~200s) = **Codex 쪽 병목**.
 
 Agent 프롬프트는 **이 SKILL.md가 자체 보유** (독립성). DEFECT 렌즈셋(기본):
 
@@ -132,62 +132,82 @@ MED  | <locus> | <problem> -> <fix>
 ### Conflicts
 두 엔진이 반대 방향 조언 → "Conflicting" 섹션에 양쪽 표시. Evidence pass가 **인용 근거로만** 한쪽을 선택.
 
+### 합성(ANGLE-DEGRADED) 마커는 후보가 아니다
+파서가 각도 파싱 실패 시 주입하는 `MED | <angle> | ANGLE-DEGRADED...` 는 인프라 신호다 — **triage/Evidence pass에 넣지 않는다**(넣으면 Evidence Agent가 접지 불가로 REJECTED시켜 신호가 소멸, robustness A1-1). `degraded:true`로 표시해 리포트의 "DEGRADED ANGLES" 섹션으로 직행시키고 candidate_count·fingerprint에서 제외.
+
 ### Short-circuit
-- `--quick` → Pass 2 스킵, 전부 `SUSPECTED`로 보고 (Tier 레이블 유지)
+- `--quick` → Pass 2 스킵, 전부 `SUSPECTED`(evidence_strength NONE, reproduction NOT_RUN, fingerprint null)로 보고 (Tier 레이블 유지)
 - 후보 0건 → Pass 2 스킵
 
 ---
 
-## Pass 2 — Evidence pass (전 후보 배치 검증)
+## Pass 2 — Evidence pass (전 후보 배치 검증 + 기계 검증)
 
-**1 콜로 모든 후보 판정** (선택된 엔진). Verifier가 아니라 **Evidence Agent** — 의견 대조가 아니라 코드 접지(grounding)가 일이다:
+Verifier가 아니라 **Evidence Agent** — 의견 대조가 아니라 코드 접지(grounding)가 일이다. Read/Grep/Glob 도구로 실제 파일을 읽어 인용한다.
 
-> 너는 Evidence Agent. 10 리뷰어(Claude 5 + Codex 5)가 같은 target을 분석해 아래 후보들을 냈다. 각 후보를 **실제 코드에 접지시키거나, 죽여라.** 리뷰어 말은 절대 그대로 믿지 않는다. 후보마다 순서대로:
+**배치 규약(무보호 단일 콜 금지)**: 후보 **≤8건**마다 한 콜로 청킹, Tier 1 → CRIT/HIGH → 나머지 순. 각 콜 프롬프트·응답에 candidate id를 실어 1:1 대응 검증. 어느 콜이 죽거나 후보를 빠뜨리면 **그 후보만** `SUSPECTED(missing: EVIDENCE_PASS_FAILED)`로 보고 — 이미 판정된 후보 재실행 금지, 라운드 전체 fail 금지.
+
+Evidence Agent 프롬프트:
+
+> 너는 Evidence Agent. 리뷰어들이 낸 아래 후보들을 **실제 코드에 접지시키거나, 죽여라.** 리뷰어 말은 절대 그대로 믿지 않는다 — 인용은 반드시 파일을 Read 해서 가져온다. 후보마다:
 >
-> 1. **위치 고정**: 정확한 `file`, `lines`, `symbol`. 고정 불가 → `SUSPECTED` 유지 + 무엇이 부족했는지 기록.
+> 1. **위치 고정**: 정확한 `file`, `lines`, `symbol`. 고정 불가 → `SUSPECTED` + `missing` 기록.
 > 2. **실행 경로 추적**: 진입→결함까지 순서 있는 호출/분기 단계.
-> 3. **증거 인용**: claim을 참으로 만드는 줄을 `file:line — 인용`으로.
-> 4. **전제조건 점검**: 공격자/호출자/상태가 충족해야 할 조건. 이 코드베이스에서 불가능하면 반증 인용과 함께 `REJECTED`.
-> 5. **판정**: `SUPPORTED`(1~3 전부 확보) / `REJECTED`(반증 인용) / `SUSPECTED`(고정 불가 또는 도메인 지식 필요 — 부족한 컨텍스트를 `REQUIRES_DOMAIN_CONFIRMATION: <질문>` 형태로 명시).
+> 3. **증거 인용**: claim을 참으로 만드는 줄을 `file:line — 인용`으로. **인용 문자열은 그 줄에 실제로 존재하는 텍스트여야 한다**(사후 기계 검증됨 — 지어내면 강등된다).
+> 4. **전제조건 점검**: 불가능하면 반증 인용과 함께 `REJECTED`.
+> 5. **판정**: `SUPPORTED`(1~3 전부) / `REJECTED`(반증 인용) / `SUSPECTED`(고정 불가 또는 `REQUIRES_DOMAIN_CONFIRMATION: <질문>`). 위치는 잡았으나 경로/인용 불완전 = `SUSPECTED` + `evidence_strength: WEAK`.
 > 6. severity 조정 가능(한 문장 근거). 새 finding 발명 금지.
-> 7. `SUPPORTED`마다 `suggested_test`(테스트 함수명 + 한 줄 시나리오) 명명 — 재현 미요청이어도.
-> 8. 후보마다 finding record v2(아래 스키마) 1건 출력. `evidence_strength`: NONE/WEAK(위치만)/MEDIUM(위치+경로+인용)/STRONG(재현 — 재현 pass만 부여).
+> 7. `SUPPORTED`마다 `suggested_test`(함수명 + 한 줄 시나리오).
+> 8. 후보마다 finding record v2 1건을 아래 펜스로 emit:
+> ```
+> <<<PRISM-RECORDS v2>>>
+> {"id":"PRISM-001","candidate_id":"c1","file":"src/auth.py","lines":"84-102","symbol":"reset_password","category":"security","severity":"HIGH","status":"SUPPORTED","claim":"...","evidence":["src/auth.py:98 — <실제 줄 텍스트>"],"reproduction":{"status":"NOT_RUN"},"confidence":{"model_agreement":"3/5","evidence_strength":"MEDIUM"}}
+> <<<END>>>
+> ```
+> (한 줄 = 한 JSON record. `evidence_strength`: NONE / WEAK(위치만) / MEDIUM(위치+경로+인용) / STRONG(재현 pass만).)
 >
-> `--verifier=both`: Claude 1콜 + Codex 1콜, 둘 다 SUPPORTED일 때만 SUPPORTED (엇갈림 = SUSPECTED).
-> `--adversarial`: REJECT 확정 전 리뷰어 편에서 반박 시도 — 반박이 원 주장보다 구체적·근거 우위일 때만 REJECT.
+> `--verifier=both`: Claude·Codex 각 1콜. 둘 다 SUPPORTED → SUPPORTED. 한쪽 실패 → 생존 엔진 단독 모드(헤더 플래그). SUPPORTED×REJECTED → SUSPECTED + 양쪽 근거를 Conflicting에 병기. 둘 다 REJECTED → REJECTED.
+> `--adversarial`: REJECT 확정 전 리뷰어 편에서 반박 — 반박이 더 구체적·근거 우위일 때만 REJECT.
+
+**기계 검증(불변, LLM 자기채점 방지)**: Evidence 응답의 v2 record를 파싱한 뒤 반드시
+```
+node "<skill dir>/verify-evidence.js" records.json "<repo-root>" > checked.json
+```
+를 돌린다. 이 스크립트가 (1) 모든 `SUPPORTED/REPRODUCED`의 `file:line — 인용`을 실제 파일에서 grep해 없으면 `SUSPECTED(EVIDENCE_QUOTE_MISMATCH)`로 자동 강등, (2) fingerprint를 코드로 재계산(sha1(file|symbol|category|claim-slug)[:12], LLM freehand hex 폐기)한다. **checked.json이 최종 진실** — 검증 안 된 인용은 SUPPORTED로 리포트 금지.
 
 ---
 
 ## Pass 3 — 재현 (`--reproduce`)
 
-프로젝트는 **절대 수정하지 않는다** — 재현은 일회용 샌드박스에서.
+프로젝트는 **절대 수정하지 않는다** — 재현은 일회용 샌드박스에서. Actor: **main agent(또는 Bash 권한을 가진 Reproduction Agent)** 가 실행한다 — Evidence Agent는 코드를 실행하지 않는다.
 
-- 대상: `SUPPORTED`만, CRIT/HIGH 우선, **런당 최대 5건**(초과분은 `STATIC_EVIDENCE_ONLY`로 명시).
-- 절차: ① 기존 테스트 먼저 검색(이미 커버하는 테스트가 증명/반증할 수 있음) ② 테스트 러너 감지(pytest/vitest/jest/node --test/go test/cargo test — 없으면 `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT`) ③ OS 임시 디렉토리(`$TMPDIR/prism-tests/`)에 최소 실패 테스트 작성 — 프로젝트 트리에 쓰기 금지, 프로젝트에 의존성 설치 금지 ④ 타임아웃 걸고 실행, 명령과 결과를 원문 그대로 기록.
-- 분류: `REPRODUCED` / `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT` / `STATIC_EVIDENCE_ONLY` / `REQUIRES_EXTERNAL_SERVICE` / `REQUIRES_DOMAIN_CONFIRMATION`.
-- **테스트가 통과하면(버그 미발현) 그건 반증** — `SUSPECTED`/`REJECTED`로 강등하고 통과 로그 인용. 재현 시도가 claim을 반박하는 것도 확인만큼 가치 있다.
-- 종료 시 임시 디렉토리 정리, 테스트 소스는 **리포트에 보존**(운영자가 실제 스위트로 승격할 수 있게).
-- 재현을 안 돌린 사실을 숨기지 않는다 — 모든 finding이 `reproduction.status`를 갖고, `STATIC_EVIDENCE_ONLY`는 정직하고 흔한 값이다.
+- 대상: `SUPPORTED`(기계 검증 통과분)만, CRIT/HIGH 우선, **런당 최대 5건**(초과분은 `STATIC_EVIDENCE_ONLY`).
+- **실행 안전(불변 — "임시 디렉토리"는 쓰기 가드일 뿐 실행 샌드박스가 아니다, Devil CRIT)**: target을 import/실행하면 모듈 레벨 부작용이 **운영자 env를 물려받아** 돈다(2026-05-22 유출 표면과 동일). 그러므로 재현 명령은 반드시 ① **env 스트립**(`env -i` + PATH·언어런타임 등 allowlist만) ② **cwd = 임시 디렉토리** ③ 네트워크 차단(러너가 지원 시) ④ **설치 전면 금지**(PATH에 이미 있는 러너만 — "installable"이라고 새로 깔지 않는다) ⑤ 첫 실행 전 **운영자 confirm 1회** ⑥ 출력에 §Codex 불변 7의 secret-scrub 적용 후 리포트 반영.
+- 절차: ① 기존 테스트 먼저 검색 ② PATH의 러너 감지(pytest/vitest/jest/node --test/go test/cargo test — 없으면 `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT`, 설치하지 않음) ③ 임시 디렉토리(`${TMPDIR:-${TEMP:-/tmp}}/prism-tests/`, `mktemp -d` 권장)에 최소 실패 테스트 작성 — 프로젝트 트리 쓰기 금지 ④ **claim의 실패 시그니처(예상 예외/assertion 메시지)를 record에 먼저 등록** ⑤ per-test **60s** 타임아웃(총 5min)으로 실행, exit code·duration·stdout/stderr tail 원문 기록.
+- 분류: `REPRODUCED`(등록한 시그니처와 **일치하는** 실패, 2회 연속 동일) / `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT`(러너·의존성 없음) / `TIMED_OUT`(동시성 버그는 hang이 곧 재현일 수 있음 — 상향 금지, 별도 기록) / `STATIC_EVIDENCE_ONLY`(cap/정적 claim) / `REQUIRES_EXTERNAL_SERVICE` / `REQUIRES_DOMAIN_CONFIRMATION`.
+- **setup/import/fixture 에러는 `REPRODUCED`가 아니라 `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT`** — 아무 red나 "예측대로 실패"로 세지 않는다.
+- **자작 테스트 통과 시**: 같은 전제조건·경로를 실제로 exercise한 경우에만 강등. 그렇지 않으면 `SUPPORTED` 유지 + `reproduction.status: NOT_REPRODUCED_BY_ATTEMPT`. 강등은 최대 `SUSPECTED`까지 — 자작 통과 테스트는 `REJECTED` 근거가 못 된다.
+- 종료 시 임시 디렉토리 정리(단 scrub 이벤트 시 §A2 보존 규칙), 테스트 소스는 **리포트+JSON에 보존**.
 
 ---
 
 ## Finding record v2 + Confidence
 
-record 스키마는 `/prism` SKILL.md와 동일 (id/fingerprint/file/lines/symbol/category/severity/status/claim/preconditions/execution_path/evidence/reproduction/confidence). `SUPPORTED` 이상은 file/lines/symbol/execution_path/인용이 **필수**. fingerprint = `sha1("<file>|<symbol>|<category>")[:8]` — 런 간 dedup 용.
+record 스키마는 `/prism` SKILL.md와 동일 (id / candidate_id / fingerprint / file / lines / symbol / category / severity / status / claim / preconditions / execution_path / evidence / reproduction{status,suggested_test,expected_signature,command,result} / confidence{model_agreement,evidence_strength,label} / missing / degraded / suggested_fix / agreement{claude,codex,cross_model}). `SUPPORTED` 이상은 file/lines/symbol/execution_path/인용 **필수**. **fingerprint·evidence_strength·status는 verify-evidence.js가 최종 확정**(모델값 덮어씀). fingerprint = `sha1(normPath|symbol|category|claim-slug)[:12]`, `file:null` → `unpinned:true`로 CI dedup 제외.
 
-```
-Confidence = model diversity + lens diversity + direct code evidence + executable reproduction
-             − missing context − unverifiable assumptions
-```
+**Confidence 결정표(스토어된 필드로 계산 가능 — 닫힌 enum {LOW, MEDIUM, MEDIUM-HIGH, HIGH, HIGH+, VERY-HIGH})**:
 
-| 신호 조합 | confidence.label |
-|---|---|
-| 한 렌즈 singleton, 증거 없음 | LOW |
-| 같은 엔진 2+ 렌즈 합의, 증거 없음 | **MEDIUM (상한)** — 같은 모델은 같은 오해 반복 가능 |
-| Claude+Codex 크로스모델 합의, 증거 없음 | MEDIUM-HIGH |
-| (합의 무관) 위치+실행경로+인용 확보 | HIGH |
-| 크로스모델 합의 + 정확한 코드 경로 | HIGH+ |
-| 실패 테스트 재현 | VERY HIGH |
+| model_agreement | evidence_strength | label |
+|---|---|---|
+| singleton | NONE/WEAK | LOW |
+| intra-model 2+ | NONE/WEAK | **MEDIUM (상한 — 같은 모델 반복 오해)** |
+| cross-model | NONE/WEAK | MEDIUM-HIGH |
+| (any) | MEDIUM (위치+경로+인용, 기계검증됨) | HIGH |
+| cross-model | MEDIUM | HIGH+ |
+| (any) | STRONG (재현됨) | VERY-HIGH |
+| REJECTED | — | (REJECTED 섹션, label 없음) |
+
+비코드 대상(문서)은 "인용"이 실행 경로가 아니라 문서 구절이므로 **HIGH 부여 금지 — MEDIUM 상한**(discovery agent가 이미 전체 문서를 봤으므로 같은 문서 재인용은 독립 접지가 아님).
 
 ---
 
@@ -195,17 +215,17 @@ Confidence = model diversity + lens diversity + direct code evidence + executabl
 
 ```
 PRISM-ALL REPORT — {target} — {timestamp}
-Mode: {verify | quick | adversarial} [+reproduce]
-Engines: Claude 5 + Codex 5 (gpt-5.5) · Evidence: {claude | codex | both}
-Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
+Mode: {default | quick | adversarial} [+reproduce] · Lenses: {defect|classic} {(auto)|(explicit)}
+Engines: Claude 5/5 + Codex {n}/5{ (degraded: <lenses>)} · Evidence: {claude | codex | both}
+Candidates: N discovered → S supported, R reproduced, X rejected, U suspected  (infra-degraded: D)
 
 ## REPRODUCED (실패 시연됨)
-- PRISM-003 [HIGH|security|VERY HIGH] file:lines@symbol — claim
-  [cross-model/security] path: ... | repro: <command> → FAILED as predicted | fix: ...
+- PRISM-003 [HIGH|security|VERY-HIGH] file:lines@symbol — claim
+  [cross-model/security] path: ... | repro: <command> → FAILED (signature match) | fix: ...
 
-## SUPPORTED (코드 경로 증거, 미실행)
+## SUPPORTED (코드 경로 증거, 미실행 — 인용 기계검증됨)
 - PRISM-001 [...|HIGH] file:lines@symbol — claim
-  [claude/multi] evidence: file:line — 인용 | repro: STATIC_EVIDENCE_ONLY | suggested_test: ...
+  [claude/multi] evidence: file:line — 인용 (verified) | repro: STATIC_EVIDENCE_ONLY | suggested_test: ...
 
 ## SUSPECTED (추론만 — 확인 필요)
 - PRISM-007 [...] — claim — missing: REQUIRES_DOMAIN_CONFIRMATION: <운영자에게 물을 질문>
@@ -213,15 +233,18 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 ## REJECTED (투명성)
 - [codex/correctness] claim — 반증: file:line — 인용
 
+## DEGRADED ANGLES (인프라 — finding 아님)
+- codex/state: [fallback: codex-unavailable] · codex/security: [fallback: prompt-too-large]
+
 ## IMPROVEMENTS (--include-improvements 시만)
-## Engine-Unique Findings (참고)
-  ### Claude-only (Codex가 놓친 것) / ### Codex-only (Claude가 놓친 것)
-## Conflicting Advice (있으면)
+## Engine-Unique Findings (참고) / ## Conflicting Advice (있으면)
 ## Recommended Action Order
 REPRODUCED 먼저, 그다음 SUPPORTED를 severity 순으로. SUSPECTED는 task가 아니라 질문으로.
 ```
 
-`--format json`: 위와 함께 `prism-report.json` 출력 — `{ "meta": {...}, "findings": [<record v2>...] }`. fingerprint로 런 간 중복 제거 가능. (SARIF: 로드맵.)
+**리포트는 실제로 돈 것만 주장한다** — 헤더의 `Codex {n}/5`·DEGRADED ANGLES는 파서의 `degraded` 플래그에서 생성. 2개 각도가 fallback이면 "Claude 5/5 + Codex 3/5 (degraded: security, state)"로 표기하고, cross-model 신뢰 라벨은 실제 양쪽이 응답한 렌즈에만 부여.
+
+`--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-all/<slug>-<run-id>/`, `--artifacts=docs` 시 repo — 이땐 .gitignore 필수)에 원자적 출력(temp write → validate → rename). 실패 시 리포트에 인라인 + `json_output: failed` 경고, 라운드는 실패시키지 않음. `{ "meta": {target,mode,lenses,engines,timestamp,counts}, "findings": [<record v2>...] }`. fingerprint(verify-evidence.js 계산)로 런 간 dedup — **status는 per-run 진실, dedup은 fingerprint로 link만 하고 이전 REJECTED를 다음 런에 suppress하지 않는다**(A4-1). (SARIF·GitHub Action: 로드맵.)
 
 ---
 
@@ -279,13 +302,19 @@ emit secrets in the first place.
 ### 호출 템플릿
 
 ```bash
-# 산출물은 기본 임시 디렉토리 — repo를 오염시키지 않는다 (2026-07 실사용 피드백).
-#  기록을 repo에 남기고 싶으면 --artifacts=docs 로 기존 경로(docs/prism-all/<slug>) 사용
-#  + 그 경로를 .gitignore에 추가할 것.
-DIR="${TMPDIR:-/tmp}/prism-all/<slug>"        # --artifacts=docs -> docs/prism-all/<slug>
+# 산출물은 기본 임시 디렉토리 — repo를 오염시키지 않는다. run-id 로 동시/재실행 격리하고
+#  mode 700 으로 멀티유저 /tmp 에서 target 소스가 world-readable 되는 것을 막는다 (robustness A4-2).
+#  기록을 repo 에 남기려면 --artifacts=docs (docs/prism-all/<slug>) — 이땐 그 경로를 .gitignore 에.
+BASE="${TMPDIR:-${TEMP:-/tmp}}/prism-all"
+DIR="$BASE/<slug>-<run-id>"                    # run-id = timestamp/PID; --artifacts=docs -> docs/prism-all/<slug>
+mkdir -p "$DIR"; chmod 700 "$BASE" "$DIR" 2>/dev/null
 AGENT="<correctness|security|state|integration|testability>"   # classic: conflict|improvement|devil|code-review|robustness
 PROMPT="$DIR/pass1.codex.$AGENT.prompt.txt"
 OUT="$DIR/pass1.codex.$AGENT.codex.txt"
+
+# Pre-create the output as not-started so a killed outer loop / missing file is
+# read as DEGRADED, never silently dropped (robustness A1-2/A2-3).
+echo "[fallback: not-started]" > "$OUT"
 
 # Unbreakable preamble FIRST (do not let the agent prompt override).
 cat > "$PROMPT" <<'EOF'
@@ -294,20 +323,21 @@ SANDBOX SAFETY POLICY (mandatory, applies to every shell command you execute):
 
 ==== AGENT PROMPT BELOW ====
 EOF
-
-# Agent-specific prompt.
 cat >> "$PROMPT" <<'EOF'
 (agent prompt)
 EOF
-
-# Target content.
 cat "$TARGET" >> "$PROMPT"
 
 BYTES=$(wc -c < "$PROMPT")
-if [ "$BYTES" -gt 180000 ]; then exit 2; fi
+# Oversized prompt hits EVERY angle identically -> mark degraded + continue,
+# never `exit 2` (that killed later angles with no marker). Suggest /prism switch.
+if [ "$BYTES" -gt 180000 ]; then echo "[fallback: prompt-too-large]" > "$OUT"; continue; fi
 
+# NOTE: each angle is its own Bash invocation (SKILL §Pass 1). Do NOT loop all 5
+# inside one Bash — outer-timeout/hang then loses later angles as missing files.
 timeout 180 codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --output-last-message "$OUT.msg" < "$PROMPT" > "$OUT.raw" 2>&1 || {
-  echo "[fallback: codex-unavailable]" > "$OUT"
+  # keep stderr tail so the operator can tell config-error vs timeout vs auth
+  echo "[fallback: codex-unavailable] $(tail -c 300 "$OUT.raw" 2>/dev/null | tr '\n' ' ')" > "$OUT"
   rm -f "$OUT.raw" "$OUT.msg"
 }
 
@@ -358,30 +388,26 @@ fi
 
 ### 출력 파서 v1 (A: 구조화 파싱 + degrade)
 
-1. `<<<PRISM-FINDINGS v1>>>` ~ `<<<END>>>` 펜스 블록을 찾는다. 그 안에서 `^(CRIT|HIGH|MED|LOW)\s*\|` 매칭 줄만 finding으로 취한다. 펜스 밖(추론, `^codex$`, `^tokens used$`, stderr `ERROR codex_core::session: failed to record rollout items`)은 전부 무시 - preamble/prose/잘림에 강건.
-1b. **Codex CLI는 전체 응답을 2회 출력한다** (`response -> tokens used N -> response 재출력`, 실측 확인). 펜스 블록이 2개로 나오면 **첫 번째 블록만** 취해 중복 집계를 막는다. **권장:** codex 호출에 `--output-last-message FILE`를 주면 최종 메시지만 그 파일에 깨끗이 받아 이 중복 + `hook:`/echo/`failed to load skill` 노이즈가 소스에서 제거된다 (raw 캡처는 invariant 7 scrub 용도로 별도 유지). `--output-schema FILE`로 JSON 강제도 가능하나 reasoning 깊이가 얕아질 수 있어 free-form+펜스가 기본.
-2. **빈 블록(펜스만)** = 그 각도 "깨끗", 정상.
-3. **펜스 부재 시 fallback:** 레거시 느슨 스캔(`^codex$`~`^tokens used$` 사이 텍스트에서 severity 라인 휴리스틱 추출)을 1회 시도.
-4. **그래도 0건이면 silent-drop 금지:** 합성 finding 한 건을 강제 추가 - `MED | <angle> | ANGLE-DEGRADED: 출력 파싱 불가 -> raw 확인 또는 재실행`. 각도가 통째로 사라지는 게 아니라 "깨졌다"가 보이게. **절대 라운드 전체를 fail시키지 않는다.**
+**파서가 정본 — 이 산문은 계약 설명일 뿐, 규칙 충돌 시 parse-findings.js 헤더가 이긴다.** discovery 출력(`<<<PRISM-FINDINGS v1>>>`~`<<<END>>>`, 한 줄 = `SEV | LOCUS | TEXT`)을 LLM 눈대중이 아니라 코드로 추출:
 
-### Tier 2: 결정론적 파서 (코드, 프로즈 파싱 대체)
+```
+node "<skill dir>/parse-findings.js" "$OUT" "$AGENT" > "$OUT.json"
+```
 
-**v1.1 정정 (parse-findings.js 헤더가 정본):** 파서는 이제 (1) **모든 펜스 블록을 스캔해 valid finding이 가장 많은 블록 선택** - 첫 블록만 취하던 규칙은 모델이 example/format 펜스를 먼저 emit하면 진짜 리뷰를 통째로 누락시켜서 폐기, (2) **severity 별칭 정규화** (critical→CRIT, medium→MED, nit/info→LOW...), (3) zero-width는 펜스 토큰 비교에만 strip(내용 보존). 위 산문의 '첫 블록만' 표현은 구버전 - 코드가 우선.
+파서 실동작(헤더 정본): (1) **모든 펜스 블록을 스캔해 valid finding이 가장 많은 블록 선택**, 개수 동률이면 첫 블록 — "첫 블록만" 규칙은 모델이 example 펜스를 먼저 emit하면 진짜 리뷰를 누락시켜 **폐기됨**(구 산문 표현 삭제). ⚠️ 역실패 주의: real 블록이 비어 있고(각도 clean) example 블록이 finding을 담으면 example이 이길 수 있으므로, discovery 계약은 "**진짜 블록을 메시지 마지막 펜스로** emit"하도록 요구하고 파서는 동률 시 last-valid 우선. (2) severity 별칭 정규화(critical→CRIT 등). (3) LOCUS는 **`|` 금지**(파서는 첫 두 `|`로만 분할, 마지막 `->`를 fix 경계로) — 렌즈는 markdown 제목/경로의 `|`를 치환 후 emit. (4) zero-width는 토큰 비교에만 strip(내용 보존). (5) `--output-last-message FILE`로 codex 2회출력·노이즈 소스 제거(raw는 scrub용 별도).
 
-위 v1 추출을 LLM 눈대중 대신 **코드**로 한다. codex 출력이 `$OUT`로 확정된 뒤 (또는 Claude agent 반환값을 파일로 쓴 뒤):
+→ `$OUT.json` = `{angle, degraded, skipped, findings:[{severity,locus,text}]}`. **degraded=true는 후보가 아니라 `meta.degraded_angles`로** — Evidence pass·candidate_count·fingerprint 제외(A1-1). synthesis는 파싱된 record를 `{engine, lens, degraded, raw_locus, raw_text}` 봉투로 감싼 뒤 triage(cross-model 합의·dedup)한다 — 코드=추출, LLM=의미 판단. 자가 검증: `node parse-findings.js --selftest` (+ Evidence 단계: `node verify-evidence.js --selftest`).
 
-    node "<이 skill 디렉토리>/parse-findings.js" "$OUT" "$AGENT" > "$OUT.json"
-
-→ `$OUT.json` = `{angle, degraded, skipped, findings:[{severity,locus,text}]}`. synthesis는 raw 프로즈가 아니라 이 **구조화 레코드**로 triage(cross-model 합의·dedup)한다 - 코드=추출(결정론), LLM=의미 판단. 첫 펜스만 / degrade / malformed-skip 규칙이 파서에 박혀 모델 출력 흔들림에 강건. 자가 검증: `node parse-findings.js --selftest`.
-
-### Fallback 정책
+### Fallback 정책 (각도별 독립 회계)
 
 | 상황 | 동작 |
 |---|---|
-| 특정 각도 Claude 실패 | `[fallback: claude-unavailable]` 태그, Codex 응답만으로 판정. state.json에 기록 |
-| 특정 각도 Codex 실패 | 폴백 모델 1회 재시도 → 실패 시 `[fallback: codex-unavailable]`, Claude 응답만 |
-| 같은 각도 양쪽 모두 실패 | Tier 1 불가 (cross-model 불가능), 해당 각도 invalid |
-| 3+ 각도에서 한 엔진 전체 실패 | 라운드 invalid, 사용자에게 `/prism` (Codex 고장) 또는 `/prism-codex` (Agent 고장) 전환 제시 |
+| 각도 Codex 실패/미시작/prompt-too-large | `$OUT`의 `[fallback: ...]` 마커 → 해당 각도 degraded, `meta.degraded_angles`에 기록. Claude측 같은 렌즈 생존 시 `[cross-model-unavailable]`로 태그(singleton보다 아래로 격하 금지) |
+| 각도 Claude 실패 | `[fallback: claude-unavailable]`, Codex측만으로 그 렌즈 처리 |
+| 같은 렌즈 양쪽 실패 | 그 렌즈 cross-model 불가 — degraded 처리, 라운드는 계속 |
+| Evidence pass 콜 실패/후보 누락 | **그 후보만** `SUSPECTED(missing: EVIDENCE_PASS_FAILED)` — 판정된 후보 재실행 금지, 라운드 fail 금지 |
+| 3+ 렌즈에서 한 엔진 전체 degraded | 헤더에 명시(`Codex 2/5`) + `/prism`(Codex 고장) 또는 `/prism-codex`(Agent 고장) 전환 제시. 리포트는 실제 돈 것만 주장 |
+| secret-scrub 히트 | 보안 인시던트 메타로 격리 — defect triage 제외, 운영자 경고를 findings 밖에 표시(A2-6) |
 
 ---
 
@@ -390,10 +416,12 @@ fi
 | Mode | Claude 콜 | Codex 콜 | Evidence | Repro | wall time | 상대 비용 |
 |---|---|---|---|---|---|---|
 | `--quick` | 5 | 5 | 0 | 0 | ~100~200s | 2.0× prism |
-| default | 5 | 5 | 1 (batched) | 0 | ~120~220s | 2.2~2.4× |
-| `--adversarial` | 5 | 5 | 1 | 0 | ~120~220s | 2.2~2.4× |
-| `--verifier=both` | 5 | 5 | 2 (batched×2) | 0 | ~140~240s | 2.4~2.6× |
-| `--reproduce` | 5 | 5 | 1 | ≤5 test runs | ~180~320s | 2.6~3.2× |
+| default | 5 | 5 | ⌈후보/8⌉ chunked | 0 | ~120~240s | 2.2~2.5× |
+| `--adversarial` | 5 | 5 | ⌈후보/8⌉ | 0 | ~120~240s | 2.2~2.5× |
+| `--verifier=both` | 5 | 5 | ⌈후보/8⌉×2 | 0 | ~140~280s | 2.4~2.8× |
+| `--reproduce` | 5 | 5 | ⌈후보/8⌉ | ≤5 test runs | ~180~340s | 2.6~3.2× |
+
+`--include-improvements`: discovery 6+6. Evidence는 후보 ≤8건마다 1콜(청킹) — 이전 "1 batched"는 30+후보를 한 콜에 밀어넣어 접지 깊이가 붕괴하던 걸 숨겼음(리뷰 HIGH).
 
 ## 자립성 검증
 
@@ -405,11 +433,11 @@ node verify-independence.js --strict   # Codex CLI >= 0.125.0 포함
 
 | Skill | Engine | 언제 |
 |---|---|---|
-| `/prism` | Claude 5 + Claude Verifier | 빠른 1-엔진, Claude 토큰 여유 |
-| `/prism-codex` | Codex 5 + Codex Verifier | 다른 모델 ensemble / Claude 토큰 절약 |
-| `/prism-all` (이 skill) | Claude 5 + Codex 5 + Verifier | 최고 신뢰, 양쪽 토큰 OK |
+| `/prism` | Claude 5 + Claude Evidence pass | 빠른 1-엔진, Claude 토큰 여유 |
+| `/prism-codex` | Codex 5 + Codex Evidence pass | 다른 모델 ensemble / Claude 토큰 절약 |
+| `/prism-all` (이 skill) | Claude 5 + Codex 5 + Evidence pass | 최고 신뢰, 양쪽 토큰 OK |
 
-셋 다 독립 plugin. 하나만 설치해도 동작.
+셋 다 독립 plugin — 각자 SKILL.md에 record v2 스키마·preamble·결정론 스크립트(parse-findings.js, verify-evidence.js) 사본을 자체 보유(포인터는 provenance 주석일 뿐, 다른 plugin 파일을 런타임 참조하지 않는다). 정본은 prism-all, 사본은 `skills/sync-review-parsers.sh`로 생성.
 
 ## 안티패턴
 

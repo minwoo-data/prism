@@ -7,7 +7,7 @@ allowed-tools:
   - Glob
   - Grep
   - Bash
-  - Task
+  - Agent
 ---
 
 # /prism Command
@@ -32,19 +32,21 @@ Run a multi-angle review across 5 defect-focused lenses in parallel, then ground
 
 ## Execution
 
-The full agent prompts and synthesis logic live in the `prism` skill at `skills/prism/SKILL.md`. Read that file before executing - it contains the 5 agent role prompts, the singleton-vs-agreement triage rules, the Verifier prompt, and the report format contract.
+The full contract lives in the `prism` skill at `skills/prism/SKILL.md`. Read that file before executing - it contains the 5 defect-lens prompts (+ the classic set for `--lenses=classic`), candidate triage (agreement = priority only, no auto-confirm), the Evidence Agent prompt, the deterministic `parse-findings.js` / `verify-evidence.js` steps, the finding record v2 schema, and the report format.
 
 ## When to use which
 
 | Situation | Mode |
 |---|---|
-| Standard review | default (verify) |
-| You're rushing | `--quick` |
+| Standard review | default (discovery + Evidence pass) |
+| Before merging a change | `--reproduce` (demonstrate the bug) |
+| Reviewing a diff/PR | `--diff [range]` |
+| You're rushing | `--quick` (everything SUSPECTED) |
 | You suspect you'll dismiss real issues | `--adversarial` |
-| Security-sensitive code | combine with `/prism-devil` |
+| Cross-model confidence | `/prism-all` (Claude + Codex) |
 
 ## Companion commands
 
-- `/prism-devil <target>` - single-agent aggressive red-team probe
+- `/prism-all <target>` - dual-engine (Claude + Codex) evidence-graded review
 - `/mangchi <file>` - iterative cross-model file hardening (after prism finds weak files)
 - `/triad <file>` - 3-perspective deliberation for markdown/specs (not code)

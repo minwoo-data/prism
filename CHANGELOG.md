@@ -5,6 +5,56 @@ All notable changes to the Prism plugin are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-07-14
+
+Hardening pass over 0.2.0, driven by a `/prism-all` meta-review of the redesign
+itself. 0.2.0 stated "evidence, not agreement" but left the evidence rung as an
+LLM self-citation; 0.2.1 makes it machine-checkable and closes the runtime seams.
+
+### Added
+- **`verify-evidence.js`** (new deterministic script, self-tested) — greps every
+  `SUPPORTED`/`REPRODUCED` quote against the cited file+lines and auto-downgrades a
+  non-matching finding to `SUSPECTED (EVIDENCE_QUOTE_MISMATCH)`. Also computes the
+  `fingerprint` in code (an LLM cannot compute sha1). `checked.json` is the source
+  of truth — a fabricated quote can no longer ship as SUPPORTED. This is the
+  keystone: it does for evidence what `parse-findings.js` did for parsing.
+- **`skills/sync-review-parsers.sh`** — single-sources both scripts from prism-all
+  to prism-codex and prism (they claim self-containment; now they actually match).
+- `<<<PRISM-RECORDS v2>>>` fenced output contract for the Evidence pass, so the
+  pass that decides every finding's status is itself parseable + degrade-safe.
+- Record v2 fields: `candidate_id`, `missing`, `degraded`, `suggested_fix`,
+  `expected_signature`, `agreement{claude,codex,cross_model}`, `unpinned`.
+
+### Changed / Fixed
+- **Fingerprint** = `sha1(normPath|symbol|category|claim-slug)[:12]`, computed by
+  verify-evidence.js — was `sha1(file|symbol|category)[:8]` freehand by the model,
+  which collided two defects in one symbol and changed every run. `file:null` →
+  `unpinned:true`, excluded from cross-run dedup.
+- **`--reproduce` execution safety** — "temp dir" was a write guard, not a sandbox:
+  importing the target runs its side effects with the operator's full env. Now
+  mandates stripped env (`env -i` + allowlist), cwd=temp, no network, **no installs
+  anywhere** (runners already on PATH only), one operator confirmation, and secret-
+  scrub on output. Added `expected_signature` pre-registration, `TIMED_OUT` and
+  `NOT_REPRODUCED_BY_ATTEMPT` statuses, a flake guard (2 identical runs), and the
+  rule that setup/import errors are `NOT_REPRODUCIBLE`, not `REPRODUCED`.
+- **Evidence pass is chunked (≤8 candidates/call)**, not one unbounded call that
+  skims 30+ candidates; a failed chunk downgrades only its own candidates.
+- **v0.1 vocabulary purged from the executable paths** — prism-all Pass 1 launched
+  the *classic* lens names by default (would have run the wrong agents); prism-codex's
+  trigger table + an anti-pattern line still described (and one *instructed*)
+  singleton-only auto-confirm; commands/prism.md described "the Verifier prompt". All
+  aligned to the defect lenses + Evidence pass. Classic prompts are now inlined in
+  every skill (the "keep original wording" pointer was dangling).
+- **Deterministic scope everywhere** — prism now also runs `parse-findings.js`;
+  ANGLE-DEGRADED markers go to `meta.degraded_angles`, never into the Evidence pass
+  (they used to be fed to a pass designed to reject them); confidence table is a
+  closed enum computable from stored fields; LOCUS must be pipe-free (parser contract).
+- **Artifacts hardened** — temp dir is `mktemp`-style with `chmod 700` (0.2.0's move
+  to `$TMPDIR` had exposed target source world-readable on multi-user hosts and made
+  scrub forensics ephemeral); `--format json` path pinned to the artifacts dir with
+  atomic write; `--diff` range + caller-cap made deterministic; header now reports
+  actually-degraded engines instead of asserting a full 10-agent run.
+
 ## [0.2.0] - 2026-07-14
 
 Evidence over agreement. The review's job is no longer "did reviewers agree?" but

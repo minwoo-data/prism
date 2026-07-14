@@ -1,6 +1,6 @@
 {
   "name": "prism",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Evidence-graded multi-angle code review - 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path; --reproduce demonstrates failures with throwaway tests. SUSPECTED → SUPPORTED → REPRODUCED: agreement prioritizes, evidence confirms.",
   "author": {
     "name": "haroom",
