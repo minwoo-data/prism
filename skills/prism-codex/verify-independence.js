@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 // prism-codex — Layer 2 self-check.
-// Same pattern as sibling skills; only SELF_NAME + REQUIRED_FILES differ.
+// Same pattern as sibling skills; only SELF_NAME / REQUIRED_FILES / PREREQUISITES differ.
+//
+// Verifies the skill is self-contained AND that its deterministic scripts exist and
+// actually run. v0.2 made parse-findings.js + verify-evidence.js load-bearing (the
+// Evidence pass calls them), so a missing or broken script must fail this check —
+// not silently PASS as "self-contained". --strict also runs each script's --selftest.
 
 'use strict';
 
@@ -9,7 +14,10 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const SELF_NAME = 'prism-codex';
-const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js'];
+// Required at rest: the contract + the deterministic scripts it invokes.
+const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js'];
+// Scripts that must pass their own --selftest under --strict (integrity, not just presence).
+const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js'];
 const PREREQUISITES = [
   { cmd: 'codex --version', label: 'Codex CLI', fatal: true, min: '0.125.0' },
 ];
@@ -79,6 +87,20 @@ function checkNoCrossRefs() {
   ok(`no cross-plugin references in ${files.length} scanned files`);
 }
 
+// --strict: the scripts must not just exist, they must pass their own selftest.
+// A load-bearing parser/evidence-checker that has silently broken is worse than absent.
+function checkScripts() {
+  for (const rel of SELFTEST_SCRIPTS) {
+    const script = path.join(SELF_DIR, rel);
+    try {
+      execSync(`node "${script}" --selftest`, { stdio: ['ignore', 'ignore', 'ignore'] });
+      ok(`selftest passed: ${rel}`);
+    } catch (e) {
+      fail(`selftest FAILED: ${rel} (\`node ${rel} --selftest\` exited non-zero)`);
+    }
+  }
+}
+
 function checkPrereqs() {
   for (const p of PREREQUISITES) {
     try {
@@ -102,6 +124,6 @@ function checkPrereqs() {
 const strict = process.argv.includes('--strict');
 checkRequired();
 checkNoCrossRefs();
-if (strict) checkPrereqs();
+if (strict) { checkScripts(); checkPrereqs(); }
 process.stdout.write(`[verify-independence:${SELF_NAME}] PASS — skill is self-contained\n`);
 process.exit(0);

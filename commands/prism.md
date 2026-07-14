@@ -1,44 +1,52 @@
 ---
 name: prism
-description: "Multi-angle review - 5 agents in parallel discover, then a Verifier pass cross-checks singleton findings. Agreement auto-confirms."
-argument-hint: "[file-or-topic] [--quick] [--adversarial]"
+description: "Evidence-graded multi-angle review - 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path. SUSPECTED → SUPPORTED → REPRODUCED; agreement prioritizes, evidence confirms."
+argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--diff [range]] [--include-improvements] [--lenses=classic] [--format json]"
 allowed-tools:
   - Read
   - Glob
   - Grep
-  - Task
+  - Bash
+  - Agent
 ---
 
 # /prism Command
 
-Run a multi-angle review across 5 specialized agents in parallel, then verify any singleton findings (only one agent flagged them) in a second pass. Cross-agent agreement skips verification automatically.
+Run a multi-angle review across 5 defect-focused lenses in parallel, then ground every candidate in actual code (file, lines, execution path) before anything is reported as confirmed. Nothing is confirmed by agreement alone.
 
 ## Parse Arguments
 
 | Argument Pattern | Action |
 |---|---|
-| `<target>` | Default: 2-pass verify mode. Pass 1 (5 agents parallel) → triage → Pass 2 (verifier on singletons). |
-| `<target> --quick` | 1 pass only. Skip verification - use when speed > signal. |
-| `<target> --adversarial` | 1 pass + REJECT re-check. Re-examines findings you'd dismiss, catching self-bias. |
+| `<target>` | Default: Discovery (5 lenses parallel) → Evidence pass (batched grounding of ALL candidates). |
+| `<target> --quick` | Discovery only — everything reported as SUSPECTED. Speed > signal. |
+| `<target> --adversarial` | Evidence pass must argue against its own REJECTs before finalizing. |
+| `<target> --reproduce` | + Reproduction pass: minimal failing tests in a temp dir (never the project tree). Max 5, CRIT/HIGH first. |
+| `--diff [base...head]` | Review the change, not the file: "what regression does this diff newly introduce?" |
+| `<target> --include-improvements` | Adds the Improvement lens (suggestions labeled separately). |
+| `<target> --lenses=classic` | Legacy lens set — auto-selected for non-code targets (docs, plans). |
+| `<target> --format json` | Also emit machine-readable `prism-report.json` (finding records v2). |
 | `(no argument)` | Review the current project's overall design and quality. |
 
 `<target>` may be a file path, a topic/feature name, or `.` for the current project.
 
 ## Execution
 
-The full agent prompts and synthesis logic live in the `prism` skill at `skills/prism/SKILL.md`. Read that file before executing - it contains the 5 agent role prompts, the singleton-vs-agreement triage rules, the Verifier prompt, and the report format contract.
+The full contract lives in the `prism` skill at `skills/prism/SKILL.md`. Read that file before executing - it contains the 5 defect-lens prompts (+ the classic set for `--lenses=classic`), candidate triage (agreement = priority only, no auto-confirm), the Evidence Agent prompt, the deterministic `parse-findings.js` / `verify-evidence.js` steps, the finding record v2 schema, and the report format.
 
 ## When to use which
 
 | Situation | Mode |
 |---|---|
-| Standard review | default (verify) |
-| You're rushing | `--quick` |
+| Standard review | default (discovery + Evidence pass) |
+| Before merging a change | `--reproduce` (demonstrate the bug) |
+| Reviewing a diff/PR | `--diff [range]` |
+| You're rushing | `--quick` (everything SUSPECTED) |
 | You suspect you'll dismiss real issues | `--adversarial` |
-| Security-sensitive code | combine with `/prism-devil` |
+| Cross-model confidence | `/prism-all` (Claude + Codex) |
 
 ## Companion commands
 
-- `/prism-devil <target>` - single-agent aggressive red-team probe
+- `/prism-all <target>` - dual-engine (Claude + Codex) evidence-graded review
 - `/mangchi <file>` - iterative cross-model file hardening (after prism finds weak files)
 - `/triad <file>` - 3-perspective deliberation for markdown/specs (not code)

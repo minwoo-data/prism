@@ -2,17 +2,21 @@
 
 > Language: [English](README.md) · **한국어**
 
-**하나의 파일을 5 각도 리뷰어에게 병렬로 태우고, 1명만 잡은 것은 Verifier가 재검증한다.**
+**5개 결함 렌즈가 병렬로 찾고 — 모든 finding은 코드에 접지(위치·실행경로·인용)돼야 "진짜"로 인정된다.**
 
-리뷰어 한 명의 "괜찮아 보인다"가 2주 뒤 "어떻게 이걸 놓쳤지?"의 가장 흔한 출처다. prism은 같은 target을 5 개 서로 다른 편향으로 동시에 리뷰하고, **한 명만 지적한 finding**(false positive 위험 구간)만 batched Verifier로 재검증한다. 2명 이상이 합의한 지적은 바로 통과.
+"AI 리뷰어 여러 명이 동의했다"는 증거가 아니다 — prism의 5 agents는 전부 같은 모델이라 같은 오해를 공유할 수 있다. 그래서 v0.2부터 **합의는 조사 우선순위를 정하고, 확정은 증거가 한다.** 모든 후보가 Evidence pass를 거쳐 `file:lines@symbol` 고정 + 실행 경로 추적 + 근거 줄 인용을 받아야 하고, `--reproduce`면 임시 디렉토리의 일회용 테스트로 실패를 직접 시연한다.
 
 ```
-/prism <target>                  -> 기본: 5 agents + batched Verifier
-/prism <target> --quick          -> 1 pass만, Verifier skip
-/prism <target> --adversarial    -> 1 pass + REJECT 재검증 (self-bias 방어)
+/prism <target>                        -> discovery (5 렌즈) + Evidence pass
+/prism <target> --reproduce            -> + 최소 실패 테스트 (임시 디렉토리 — 프로젝트는 불변)
+/prism --diff main...HEAD              -> 변경 리뷰: 이 diff가 새로 만드는 회귀는?
+/prism <target> --quick                -> discovery만 (전부 SUSPECTED로 보고)
+/prism <target> --adversarial          -> Evidence pass가 자기 REJECT에 반박 후 확정
+/prism <target> --include-improvements -> Improvement 렌즈 추가 (분리 집계)
+/prism <target> --format json          -> 기계가독 prism-report.json (finding record v2)
 ```
 
-5 에이전트, 5 각도, 한 스펙트럼. Target은 파일/디렉토리/주제 전부 OK.
+모든 finding의 상태: `SUSPECTED`(추론만) → `SUPPORTED`(위치+경로+인용) → `REPRODUCED`(실패 테스트 실행됨) / `REJECTED`(반증 인용). Target은 파일/디렉토리/주제 전부 OK.
 
 ---
 
@@ -24,7 +28,7 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 
 **prism으로:**
 
-`/prism src/services/auth.py`. 5 리뷰어가 병렬로 서로 다른 편향(conflict / improvement / devil / code-review / robustness)에서 파일을 본다. 2명 이상이 같은 지적을 하면 자동 CONFIRMED. 한 명만 본 지적은 별도 Verifier pass를 거쳐 false positive가 시간 낭비하지 않게 한다.
+`/prism src/services/auth.py --reproduce`. 5 결함 렌즈(correctness / security / state&concurrency / integration / testability)가 병렬로 파일을 보고, 모든 후보가 접지 검증(정확한 위치·실행 경로·인용)을 거친 뒤, 상위 finding은 임시 디렉토리에서 최소 실패 테스트로 실제 시연된다. 리포트는 *시연된 것* / *정적 증거만 있는 것* / *추론뿐인 것* / *반증과 함께 기각된 것*을 구분해 준다. (v0.1의 "2명 합의 = 자동 CONFIRMED" 규칙은 폐기 — 같은 모델의 합의는 상관된 오해일 수 있다.)
 
 ## 누가 써야 하는가
 
@@ -34,11 +38,18 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 - **skill / 디자인 문서 / 워크플로우 감사** — 리뷰어 간 의견 불일치 자체가 신호
 - "5명한테 같은 코드 보여주고 싶다"는 욕구를 자동화하고 싶을 때
 
-## 자매 도구 (같은 마켓플레이스)
+## 어떤 도구를 쓰지? (haroom 패밀리)
 
-- **[ddaro](https://github.com/minwoo-data/ddaro)** — worktree 기반 병렬 Claude Code 세션 + 안전한 merge.
-- **[triad](https://github.com/minwoo-data/triad)** — markdown / 디자인 문서용 더 깊은 3관점 숙의.
-- **[mangchi](https://github.com/minwoo-data/mangchi)** — Claude + Codex cross-review로 파일 반복 다듬기.
+| 목적 | 도구 |
+|---|---|
+| 넓게 결함 찾기 (증거 등급) | **prism** (이 플러그인) |
+| Claude + Codex 교차 검토 | `/prism-all` (이 플러그인에 포함) |
+| 보안·공격자 관점 심층 프로브 | [prism-devil](https://github.com/minwoo-data/prism-devil) |
+| 실제 코드 수정 반복 | [mangchi](https://github.com/minwoo-data/mangchi) |
+| 문서·설계 검토 | [triad](https://github.com/minwoo-data/triad) |
+| worktree 병렬 세션 + 안전한 merge | [ddaro](https://github.com/minwoo-data/ddaro) |
+
+> ℹ️ 이 문서의 아래 상세 섹션 일부는 v0.1 기준일 수 있다 — v0.2 동작(Evidence pass·상태 사다리·`--reproduce`)의 정본은 [English README](README.md)와 CHANGELOG.
 
 ---
 
