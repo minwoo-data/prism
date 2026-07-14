@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// prism-all — Layer 2 self-check.
+// prism — Layer 2 self-check.
 // Same pattern as sibling skills; only SELF_NAME / REQUIRED_FILES / PREREQUISITES differ.
 //
 // Verifies the skill is self-contained AND that its deterministic scripts exist and
@@ -13,14 +13,12 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const SELF_NAME = 'prism-all';
+const SELF_NAME = 'prism';
 // Required at rest: the contract + the deterministic scripts it invokes.
 const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js'];
 // Scripts that must pass their own --selftest under --strict (integrity, not just presence).
 const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js'];
-const PREREQUISITES = [
-  { cmd: 'codex --version', label: 'Codex CLI', fatal: true, min: '0.125.0' },
-];
+const PREREQUISITES = []; // prism is Claude-only — no external CLI prerequisite
 
 const SELF_DIR = __dirname;
 

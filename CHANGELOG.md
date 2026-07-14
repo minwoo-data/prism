@@ -18,8 +18,15 @@ LLM self-citation; 0.2.1 makes it machine-checkable and closes the runtime seams
   `fingerprint` in code (an LLM cannot compute sha1). `checked.json` is the source
   of truth — a fabricated quote can no longer ship as SUPPORTED. This is the
   keystone: it does for evidence what `parse-findings.js` did for parsing.
-- **`skills/sync-review-parsers.sh`** — single-sources both scripts from prism-all
-  to prism-codex and prism (they claim self-containment; now they actually match).
+- **`skills/sync-review-parsers.sh`** — single-sources the scripts from prism-all to
+  prism-codex and prism (they claim self-containment; now they actually match), and
+  **verifies the sync held** (diff gate) instead of copying blind.
+- **`verify-independence.js` in every skill** (was missing from the flagship `prism`)
+  now lists the deterministic scripts in `REQUIRED_FILES` and, under `--strict`, runs
+  each script's `--selftest`. A missing or silently-broken `parse-findings.js` /
+  `verify-evidence.js` now FAILs the self-check instead of passing as "self-contained"
+  — the load-bearing v0.2 scripts are covered by the integrity gate that already
+  guards cross-plugin references.
 - `<<<PRISM-RECORDS v2>>>` fenced output contract for the Evidence pass, so the
   pass that decides every finding's status is itself parseable + degrade-safe.
 - Record v2 fields: `candidate_id`, `missing`, `degraded`, `suggested_fix`,
