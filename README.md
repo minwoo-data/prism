@@ -2,17 +2,28 @@
 
 > Language: **English** · [한국어](README.ko.md)
 
-**Put one file through five specialized reviewers, then verify whatever only one of them caught.**
+**Five defect lenses discover in parallel — then every finding must be pinned to code before it's called real.**
 
-A single reviewer's "looks good" is the most common source of "how did we miss that?" two weeks later. prism runs five different biases over the same target in parallel, then runs a batched verifier over the findings only one agent flagged — the false-positive zone. Whatever two or more agents converged on passes straight through.
+"Multiple AI reviewers agreed" is not evidence: all five prism agents run on the same model, and same-model agents can share the same misunderstanding. So in prism, **agreement decides what gets investigated first; evidence decides what survives.** Every candidate goes through an Evidence pass that pins `file:lines@symbol`, traces the execution path, and quotes the line that makes the claim true. With `--reproduce`, prism goes one step further and demonstrates the failure with a throwaway test.
 
 ```
-/prism <target>                  -> default: 5 agents + batched Verifier
-/prism <target> --quick          -> 1 pass only, no Verifier
-/prism <target> --adversarial    -> 1 pass + REJECT re-check (self-bias defense)
+/prism <target>                        -> discovery (5 lenses) + Evidence pass
+/prism <target> --reproduce            -> + minimal failing tests in a temp dir (never your project)
+/prism --diff main...HEAD              -> review the CHANGE: what regression does this diff introduce?
+/prism <target> --quick                -> discovery only (everything reported as SUSPECTED)
+/prism <target> --adversarial          -> Evidence pass argues against its own REJECTs
+/prism <target> --include-improvements -> add the Improvement lens (labeled separately)
+/prism <target> --format json          -> machine-readable prism-report.json (finding records v2)
 ```
 
-Five agents, five angles, one spectrum. Agreement passes through. Singletons get scrutinized. Target can be a file, a directory, or a topic.
+Every finding carries a status on the evidence ladder:
+
+| Status | Meaning |
+|---|---|
+| `SUSPECTED` | agent reasoning only |
+| `SUPPORTED` | file + lines + execution path + quoted evidence |
+| `REPRODUCED` | a failing test was actually run |
+| `REJECTED` | contradicted — with the contradicting line quoted |
 
 ---
 
@@ -24,7 +35,7 @@ You ask Claude "review this file". It says "looks good". You ship it. Two weeks 
 
 **With prism:**
 
-`/prism src/services/auth.py`. Five reviewers look at the file in parallel with five different biases (conflict detection / improvement / devil's advocate / code review / robustness). Anything 2+ agree on is auto-confirmed. Anything only one agent saw gets a second verifier pass so false positives don't waste your time.
+`/prism src/services/auth.py --reproduce`. Five defect lenses scan the file in parallel (correctness / security / state & concurrency / integration / testability). Every candidate is then grounded: exact location, execution path, quoted evidence — and the top findings get a minimal failing test written in a temp directory and actually run. The report tells you what was *demonstrated*, what has *static evidence*, what is *only suspected*, and what was *rejected with proof*.
 
 ## Who should use this
 
@@ -34,11 +45,16 @@ You ask Claude "review this file". It says "looks good". You ship it. Two weeks 
 - **Auditing a skill, design doc, or workflow** — the disagreement between reviewers is itself signal
 - **Whenever you'd ask 5 senior engineers to look at the same thing**
 
-## Sibling tools (same marketplace)
+## Which tool do I want? (haroom family)
 
-- **[ddaro](https://github.com/minwoo-data/ddaro)** — worktree-based parallel Claude Code sessions with safe merge.
-- **[triad](https://github.com/minwoo-data/triad)** — deeper 3-perspective deliberation for markdown and design docs.
-- **[mangchi](https://github.com/minwoo-data/mangchi)** — iterative file refinement with Claude + Codex cross-review.
+| Goal | Tool |
+|---|---|
+| Find defects broadly, evidence-graded | **prism** (this plugin) |
+| Cross-check with a second model (Claude + Codex) | `/prism-all` (ships in this plugin) |
+| Security / attacker-mindset deep probe | [prism-devil](https://github.com/minwoo-data/prism-devil) |
+| Actually fix a file, iteratively | [mangchi](https://github.com/minwoo-data/mangchi) |
+| Review markdown / designs / specs | [triad](https://github.com/minwoo-data/triad) |
+| Parallel worktree sessions with safe merge | [ddaro](https://github.com/minwoo-data/ddaro) |
 
 ---
 
@@ -61,9 +77,9 @@ You ask Claude "review this file". It says "looks good". You ship it. Two weeks 
 ### 3. Use
 
 ```
-/prism src/services/auth.py                 # default: 5 agents + batched Verifier
-/prism src/services/auth.py --quick         # 1 pass only, no Verifier
-/prism src/services/auth.py --adversarial   # 1 pass + REJECT re-check
+/prism src/services/auth.py                 # discovery + Evidence pass
+/prism src/services/auth.py --reproduce     # + failing-test reproduction (temp dir)
+/prism --diff main...HEAD                   # change-scoped: regressions this diff introduces
 /prism .                                    # whole-project review
 ```
 
@@ -85,37 +101,49 @@ All three ship inside one plugin install. Pick one per run. Codex CLI prerequisi
 
 ---
 
-## The five agents
+## The five lenses (defect set — default for code)
 
-| Agent | Looks for |
+| Lens | Looks for |
 |---|---|
-| **Conflict Detection** | Overlaps with existing code/skills, config contradictions, integration risks |
-| **Improvement** | Concrete enhancements, efficiency gains, missing features |
-| **Devil's Advocate** | Weaknesses, gaming/Goodhart risk, false confidence, regression risk |
-| **Code Review** | Clarity, completeness, correctness, pattern consistency |
-| **Robustness (4-Axis)** | Concurrency / Failure & Recovery / Data Integrity / State Transitions |
+| **Correctness & Contracts** | Wrong results, boundary values, error paths, violated invariants, API contract breaks |
+| **Security & Trust Boundaries** | Missing validation, authz gaps, injection, secret exposure — with the attacker precondition |
+| **State, Concurrency & Recovery** | Races, lost updates, TOCTOU, non-idempotent retries, orphaned/stuck states |
+| **Integration & Regression** | Caller-contract breaks, schema/config drift, backward-compat hazards, hidden coupling |
+| **Testability & Observability** | Swallowed errors, silent fallbacks, lying logs, failure modes with no signal |
 
-Each runs in a **forked context** so the main conversation stays clean and the agents can't see each other's output — agreement becomes independent signal, not echo.
+The **Improvement** lens (refactors/features/UX) is opt-in via `--include-improvements` — it keeps
+defect reports quiet by default. `--lenses=classic` restores the original prism set
+(Conflict/Improvement/Devil/CodeReview/Robustness), auto-selected for non-code targets.
 
-## How verification works
+Each lens runs in a **forked context** so agents can't see each other's output — agreement stays
+an independent signal, not an echo.
 
-After Pass 1, every finding is classified:
+## How evidence grading works
 
-- **AGREEMENT** (2+ agents flagged) → auto-CONFIRMED, skips Pass 2
-- **SINGLETON** (1 agent only) → goes into Pass 2
+After discovery, every finding is a **candidate** — nothing is auto-confirmed:
 
-Pass 2 runs **one batched Verifier agent** that gets the full target + all 5 Pass 1 outputs + the singleton list. It returns `CONFIRMED | REJECTED | DEPENDS` for each. Twenty singletons cost the same as two — the verifier batches them.
+- **Agreement (2+ lenses)** sets priority and baseline confidence only. Same-model agreement is
+  capped at MEDIUM confidence: five copies of the same model can share the same misunderstanding.
+- **Every candidate** goes through one batched **Evidence pass**: pin `file/lines/symbol`, trace
+  the execution path, quote the evidence line, check the precondition. Only then:
+  `SUPPORTED` / `REJECTED` (with contradicting quote) / still `SUSPECTED` (with what's missing).
+- **`--reproduce`** takes SUPPORTED findings (CRIT/HIGH first, max 5) and writes a minimal failing
+  test in the OS temp dir — never your project tree — runs it, and records the verbatim result.
+  A test that *passes* downgrades the finding: contradiction is recorded, not hidden.
 
-Cheap consensus passes through fast. Only borderline findings pay the verification cost.
+Every finding ships as a structured **record v2** — `id`, stable `fingerprint` (cross-run dedup),
+`file/lines/symbol`, `category`, `severity`, `status`, `claim`, `preconditions`, `execution_path`,
+`evidence`, `reproduction{status,suggested_test,command,result}`, `confidence`.
 
 ## Features
 
-- **Parallel discovery** — 5 agents fire in a single tool call, so total wall-time ≈ the slowest one, not the sum.
-- **Auto-promotion on agreement** — 2+ agents converging is treated as the highest-confidence tier and skips Verifier entirely.
-- **Batched Verifier** — one call covers all singletons; the cost of verification does not scale with finding count.
-- **Adversarial mode** — in `--adversarial`, the Verifier argues against its own REJECT before accepting it. Defense against dismissing a real issue.
-- **Fork isolation** — the 5 agents run in separate contexts. No conversation bleed, no echo chamber.
-- **Code never modified** — prism is a pure reviewer. Use a different tool (e.g. `/mangchi`) to actually change code.
+- **Parallel discovery** — 5 lenses fire in a single tool call; wall-time ≈ the slowest one.
+- **Evidence over agreement** — confirmation requires location + execution path + quote, never vote count.
+- **Reproduction sandbox** — failing tests demonstrate bugs without touching your project; "we didn't run it" is always stated (`STATIC_EVIDENCE_ONLY`, `REQUIRES_EXTERNAL_SERVICE`, ...).
+- **Change-scoped mode** — `--diff` reviews what a change breaks, not whether the codebase is nice.
+- **Batched Evidence pass** — one call covers all candidates; cost doesn't scale with finding count.
+- **Adversarial mode** — the Evidence pass argues against its own REJECTs before finalizing.
+- **Code never modified** — prism is a pure reviewer. Use `/mangchi` to actually change code.
 
 ---
 
@@ -133,36 +161,38 @@ Natural language: *"full review"*, *"design review"*, *"prism 돌려"*.
 Report shape:
 
 ```
-PRISM REPORT - src/services/auth.py - 2026-04-20 15:30
-Mode: verify
+PRISM REPORT - src/auth.py - 2026-07-14 15:30
+Mode: verify +reproduce · Lenses: defect
+Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
-## CRITICAL (must fix)
-- [3/5 agreement] CSRF token reused across requests → rotate per request
-- [1/5 → verified] Password reset link not single-use → add nonce table
+## REPRODUCED (demonstrated failures)
+- PRISM-003 [HIGH|security] src/auth.py:84-102 reset_password — Reset token can be reused
+  path: reset_password → token lookup → password update → token not invalidated
+  repro: pytest /tmp/prism-tests/test_reset_reuse.py → FAILED as predicted
 
-## HIGH (should fix)
-- [2/5 agreement] ...
-- [1/5 → verified] ...
+## SUPPORTED (code-path evidence, not executed)
+- PRISM-001 [MED|state] src/auth.py:120-133 rate_limit — check-then-insert race allows overshoot
+  evidence: src/auth.py:127 — count read before insert, no lock | repro: STATIC_EVIDENCE_ONLY
 
-## Rejected Singletons
-- [Improvement → rejected] "Add OAuth login" - Verifier: out of scope per CLAUDE.md (SSO permanently deferred)
+## SUSPECTED (needs confirmation)
+- PRISM-007 — missing: REQUIRES_DOMAIN_CONFIRMATION: is 5-minute token reuse acceptable here?
 
-## Cross-Agent Agreements
-3 findings where multiple agents converged.
+## REJECTED (transparency)
+- [security lens] "JWT alg confusion" — contradicting evidence: src/auth.py:41 — alg pinned to HS256
 
 ## Recommended Action Order
-1. ...
+1. PRISM-003 (reproduced) ...
 ```
 
 ## Cost
 
 | Mode | Cost | When |
 |---|---|---|
-| `--quick` | 1.0× | Already-triaged targets |
-| default (verify) | 1.2–1.4× | Standard reviews |
-| `--adversarial` | 1.2–1.4× | When you suspect self-bias |
+| `--quick` | 1.0× | Already-triaged targets (everything SUSPECTED) |
+| default | 1.3–1.5× | Standard reviews |
+| `--reproduce` | 1.6–2.2× | Before merging anything that matters |
 
-Verifier cost is constant in the number of singletons (one batched call).
+Evidence-pass cost is constant in the number of candidates (one batched call).
 
 ---
 
@@ -264,10 +294,19 @@ The base `/prism` runs entirely within Claude Code. No external CLI required.
 
 ## Philosophy
 
-Five independent reviewers who can't see each other. Whatever they agree on is almost certainly real. Whatever only one of them saw gets one more pass before you spend a minute on it. The verifier runs in a single batched call so verification is cheap per finding — which is the whole point of separating discovery from verification.
+"Several AI reviewers said so" is an opinion poll. A defect report is a *claim about code*, and
+claims about code can be grounded: a location, an execution path, a quoted line — ideally a test
+you can watch fail. prism v0.2 treats agreement as a search heuristic and evidence as the only
+currency of confirmation. The most honest sentence in a review is often
+`reproduction: STATIC_EVIDENCE_ONLY` — said out loud instead of implied away.
 
 ## Updates
 
+- **2026-07-14 (v0.2.0)** — Evidence over agreement: statuses SUSPECTED/SUPPORTED/REPRODUCED/REJECTED,
+  mandatory Evidence pass for all candidates (same-model agreement no longer auto-confirms),
+  finding records v2 with stable fingerprints, `--reproduce` (temp-dir failing tests),
+  `--diff` change-scoped mode, defect-focused default lenses (`--include-improvements` opt-in),
+  `--format json`. See CHANGELOG for the full list.
 - **2026-04-24** — New sibling skills `/prism-codex` (Codex-only) and `/prism-all` (dual-engine) shipped. Codex CLI migration writeup in the sibling triad plugin: [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md). Read it if you hit a "model does not exist" error when first using a Codex-backed variant.
 
 ## License

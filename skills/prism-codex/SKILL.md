@@ -1,7 +1,7 @@
 ---
 name: prism-codex
-description: Codex-backed multi-angle review. Like prism but the 5 discovery agents + Verifier are all Codex CLI (gpt-5.5) instead of Claude subagents. Same 5 angles (Conflict / Improvement / Devil / CodeReview / Robustness) + singleton Verifier. Use when you want different-model opinions or Claude tokens are scarce. Triggers on "/prism-codex <target>", "prism codex로", "codex prism".
-argument-hint: "<target> [--quick] [--adversarial]"
+description: Codex-backed evidence-graded review. Like prism but the 5 discovery agents + Evidence pass are all Codex CLI (gpt-5.5). Statuses SUSPECTED → SUPPORTED → REPRODUCED; agreement prioritizes, evidence confirms. Use when you want different-model opinions or Claude tokens are scarce. Triggers on "/prism-codex <target>", "prism codex로", "codex prism".
+argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--include-improvements] [--lenses=classic]"
 user-invocable: true
 ---
 
@@ -11,19 +11,23 @@ user-invocable: true
 
 ## 핵심 가치
 
-기존 `/prism`과 동일한 5-각도 분산 + Verifier 패턴. 차이는 판단 주체가 다른 모델 (OpenAI gpt-5.5 via Codex CLI). prism이 Claude 내부 ensemble이라면, prism-codex는 **다른 모델에 같은 구조의 ensemble을 실행**. 둘 다 원하면 `/prism-all`.
+기존 `/prism`과 동일한 5-렌즈 분산 + Evidence pass 패턴. 차이는 판단 주체가 다른 모델 (OpenAI gpt-5.5 via Codex CLI). 둘 다 원하면 `/prism-all`.
 
-## 5 각도 (prism과 동일)
+⚠️ **단일 모델 ensemble의 한계**: 5 agents가 전부 같은 모델이므로 **합의(2+)는 확정이 아니라 우선순위 신호**다 — 같은 모델은 같은 오해를 반복할 수 있다. 합의만으로는 confidence MEDIUM 상한; SUPPORTED 이상은 Evidence pass의 코드 접지(위치+실행경로+인용)가 필요하다. Evidence 사다리(SUSPECTED/SUPPORTED/REPRODUCED/REJECTED)와 finding record v2는 `/prism` v0.2와 동일 계약.
 
-| Agent | 역할 |
+## 렌즈 (기본 DEFECT — prism v0.2와 동일)
+
+| Lens | 역할 |
 |---|---|
-| 1. **Conflict Detection** | 충돌·모순·통합 위험 |
-| 2. **Improvement** | 구체적 개선 제안 |
-| 3. **Devil's Advocate** | 약점·실패 모드·self-bias 저격 |
-| 4. **Code Review** | 명확성/완전성/정확성/일관성 |
-| 5. **Robustness (4-Axis)** | 동시성/실패복구/데이터무결성/상태전이 |
+| 1. **Correctness & Contracts** | 틀린 결과·경계값·에러 경로·불변식·API 계약 위반 |
+| 2. **Security & Trust Boundaries** | 입력 검증·인가 공백·injection·secret·unsafe default (+공격자 전제조건) |
+| 3. **State, Concurrency & Recovery** | race/lost update/TOCTOU·비멱등 재시도·고아/고착 상태 (+트리거 시퀀스) |
+| 4. **Integration & Regression** | 호출자 계약 파괴·스키마/설정 드리프트·하위호환·숨은 결합 |
+| 5. **Testability & Observability** | 삼켜진 예외·조용한 폴백·거짓 로그·신호 없는 실패 |
 
-+ **Verifier**: singleton findings (1명만 지적한 것) 일괄 검증.
+`--include-improvements` → Improvement 렌즈 추가(분리 집계). `--lenses=classic` → 아래 구 5종 프롬프트 사용(비코드 대상은 자동).
+
++ **Evidence pass**: 전 후보 일괄 접지 검증.
 
 ## 전제 (Prerequisite)
 
@@ -61,7 +65,9 @@ Claude Agent 병렬 스폰과 달리 Codex CLI는 한 번에 1콜이 안정적. 
 
 각 호출마다 프롬프트 파일 생성 → `codex exec --dangerously-bypass-approvals-and-sandbox < prompt.txt > out.txt`.
 
-### Agent 프롬프트 (5개, 이 SKILL.md 자체 보유)
+### Agent 프롬프트 (이 SKILL.md 자체 보유)
+
+**DEFECT 렌즈셋(기본)** — 각 프롬프트는 위 렌즈 표의 역할 정의 + 공통 계약("너는 의심을 생산한다 — 확정은 Evidence pass의 일. LOCUS는 가능한 한 `file:lines@symbol`")으로 구성한다. **CLASSIC 렌즈셋(`--lenses=classic`)** 은 아래 구 프롬프트 5개를 그대로 사용:
 
 **1. Conflict Detection**
 
@@ -116,40 +122,34 @@ HIGH | <locus> | <problem> -> <fix>
 
 ## Synthesis Triage (메인)
 
-5 응답 수집 후 각 finding 분류:
+5 응답 수집 후 각 finding 분류 — **분류는 우선순위이지 확정이 아니다. 전 후보가 Pass 2로 간다**:
 
-- **AGREEMENT**: 2+ agents가 (semantic overlap) 지적 → 자동 CONFIRM, Pass 2 스킵
-- **SINGLETON**: 정확히 1 agent → Pass 2 Verifier 대상
+- **AGREEMENT**: 2+ agents가 (semantic overlap) 지적 → 우선 처리 후보. ⚠️ 자동 CONFIRM 금지 — 같은 모델 5명의 합의는 상관된 오해일 수 있다 (구버전 규칙 폐기).
+- **SINGLETON**: 정확히 1 agent → 후순위 후보.
 
 Short-circuit:
-- `--quick` → Pass 2 스킵
-- singletons = 0 → Pass 2 스킵
-- total ≤ 3 AND `--quick` 아님 → Pass 2 실행하되 Verifier에 전체 전달
+- `--quick` → Pass 2 스킵, 전부 `SUSPECTED`로 보고
+- 후보 0건 → Pass 2 스킵
 
 ---
 
-## Pass 2 — Codex Verifier (singleton 배치 검증)
+## Pass 2 — Codex Evidence pass (전 후보 배치 접지)
 
-**1 Codex 콜로 모든 singleton 일괄**:
+**1 Codex 콜로 모든 후보 일괄** (AGREEMENT 먼저, SINGLETON 다음):
 
-> 너는 **Verifier Agent**. 5 리뷰어가 같은 target을 분석했다. 각 singleton (1명만 지적)마다 판정: `CONFIRMED` / `REJECTED` / `DEPENDS`.
+> 너는 **Evidence Agent**. 5 리뷰어가 같은 target을 분석해 아래 후보들을 냈다. 각 후보를 실제 코드에 접지시키거나, 죽여라. 후보마다:
 >
-> 규칙:
-> - target 전체 + 5 Pass 1 응답 전부 + singleton list 읽고 판정.
-> - CONFIRMED: 유효. severity 조정 가능.
-> - REJECTED: 틀림. 어느 context가 차이 만들었는지 명시.
-> - DEPENDS: 조건부. 조건 명시 + 여기서 성립 여부.
-> - 새 finding 발명 금지.
+> 1. 위치 고정: `file`, `lines`, `symbol`. 고정 불가 → `SUSPECTED` + 부족한 것 기록.
+> 2. 실행 경로 추적: 진입→결함 순서 단계.
+> 3. 증거 인용: `file:line — 인용`.
+> 4. 전제조건 점검: 불가능하면 반증 인용과 함께 `REJECTED`.
+> 5. 판정: `SUPPORTED` / `REJECTED` / `SUSPECTED`(+`REQUIRES_DOMAIN_CONFIRMATION: <질문>`).
+> 6. severity 조정 가능(한 문장 근거). 새 finding 발명 금지.
+> 7. `SUPPORTED`마다 `suggested_test` 명명.
 >
-> 포맷:
-> ```yaml
-> - id: <singleton_id>
->   original: "<finding>"
->   original_severity: CRIT|HIGH|MED|LOW
->   verdict: CONFIRMED|REJECTED|DEPENDS
->   adjusted_severity: <CONFIRMED일 때만>
->   reasoning: "1-2문장"
-> ```
+> 포맷: 후보당 finding record v2 1건 (id/fingerprint/file/lines/symbol/category/severity/status/claim/preconditions/execution_path/evidence/reproduction/confidence — `/prism` v0.2와 동일 스키마). `evidence_strength`: NONE/WEAK/MEDIUM/STRONG.
+
+`--reproduce`: `/prism` v0.2와 동일 규약 — SUPPORTED CRIT/HIGH 우선 최대 5건, OS 임시 디렉토리에만 최소 실패 테스트 작성·실행(프로젝트 트리 쓰기 금지), 결과 분류는 REPRODUCED / NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT / STATIC_EVIDENCE_ONLY / REQUIRES_EXTERNAL_SERVICE / REQUIRES_DOMAIN_CONFIRMATION. 테스트가 통과하면 반증으로 기록·강등.
 
 ### `--adversarial` 모드
 
@@ -161,27 +161,21 @@ Short-circuit:
 
 ```
 PRISM-CODEX REPORT — {target} — {timestamp}
-Mode: {verify | quick | adversarial}
+Mode: {verify | quick | adversarial} [+reproduce]
 Engine: Codex CLI (gpt-5.5)
+Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
-## CRITICAL (must fix)
-- [3/5 agreement] Finding → Fix
-- [1/5 → verified] Finding → Fix (Verifier: reason)
-
-## HIGH / MEDIUM / LOW (same format)
-## Rejected Singletons (Pass 2 ran)
-## Depends-on-Context (Verifier DEPENDS)
-## Cross-Agent Agreements
-## Cross-Agent Disagreements
+## REPRODUCED (실패 시연됨)
+## SUPPORTED (코드 경로 증거, 미실행)
+- PRISM-001 [HIGH|security] file:lines@symbol — claim
+  [3/5 agreement] evidence: file:line — 인용 | repro: STATIC_EVIDENCE_ONLY | suggested_test: ...
+## SUSPECTED (추론만 — 확인 필요)
+## REJECTED (투명성 — 반증 인용)
+## IMPROVEMENTS (--include-improvements 시만)
 ## Recommended Action Order
 ```
 
-레이블:
-- `[N/5 agreement]` — N명이 semantic match
-- `[1/5 → verified]` — Pass 2 통과 singleton
-- `[1/5 → rejected]` — Verifier dismissed
-- `[1/5 → depends]` — Verifier conditional
-- `--quick`: 검증 레이블 없이 `[source agent]`만
+레이블: `[N/5 agreement]` — N명 semantic match (우선순위 신호). ⚠️ 단일 모델이므로 합의만으로 confidence MEDIUM 상한 — 상태(SUPPORTED+)는 항상 Evidence pass 산출. `--quick`: 전부 SUSPECTED, `[source agent]` 레이블만.
 
 ---
 
@@ -223,9 +217,10 @@ to verify compose merge shape.
 ### 호출 템플릿
 
 ```bash
-DIR="docs/prism-codex/<slug>"
+# 산출물 기본 위치는 임시 디렉토리 — repo 오염 방지. 기록 보존 원하면 --artifacts=docs.
+DIR="${TMPDIR:-/tmp}/prism-codex/<slug>"      # --artifacts=docs -> docs/prism-codex/<slug>
 N=1
-AGENT="<conflict|improvement|devil|code-review|robustness>"
+AGENT="<correctness|security|state|integration|testability>"   # classic: conflict|improvement|devil|code-review|robustness
 PROMPT="$DIR/pass1.$AGENT.prompt.txt"
 OUT="$DIR/pass1.$AGENT.codex.txt"
 

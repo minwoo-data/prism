@@ -1,36 +1,51 @@
 ---
 name: prism-all
-description: Dual-engine multi-angle review. Runs all 5 angles (Conflict / Improvement / Devil / CodeReview / Robustness) on BOTH Claude subagents and Codex CLI in parallel — 10 total discovery calls — then Verifier cross-checks singletons. Cross-model agreement = highest confidence. Use for consequential code where you want the strongest possible review. Triggers on "/prism-all <target>", "prism all로", "크로스모델 prism".
-argument-hint: "<target> [--quick] [--adversarial] [--verifier=claude|codex|both]"
+description: Dual-engine evidence-graded review. Runs 5 defect lenses on BOTH Claude subagents and Codex CLI in parallel — 10 discovery calls — then an Evidence pass pins every candidate to file/lines/execution-path. Statuses SUSPECTED → SUPPORTED → REPRODUCED; cross-model agreement raises priority and baseline confidence, but only evidence confirms. Use for consequential code. Triggers on "/prism-all <target>", "prism all로", "크로스모델 prism".
+argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--include-improvements] [--lenses=classic] [--format json] [--verifier=claude|codex|both]"
 user-invocable: true
 ---
 
-# prism-all — Dual-Engine Multi-Angle Review
+# prism-all — Dual-Engine Evidence-Graded Review
 
-> 메인은 Claude (오케스트레이터). 매 리뷰 **Claude Agent 5 + Codex CLI 5 = 10 discovery**를 병렬 발사, 같은 각도에서 두 엔진이 모두 잡은 finding을 최고 신뢰 티어로 승급.
-> 코드/target은 절대 수정하지 않는다 — 리포트만 산출.
+> 메인은 Claude (오케스트레이터). 매 리뷰 **Claude Agent 5 + Codex CLI 5 = 10 discovery**를 병렬 발사.
+> **합의는 우선순위, 확정은 증거.** 어떤 합의도 finding을 확정하지 않는다 — 확정은 Evidence pass가
+> 코드 위치·실행 경로·인용을 붙였을 때(SUPPORTED), 그리고 가능하면 실패 테스트로 재현했을 때(REPRODUCED)만.
+> 코드/target은 절대 수정하지 않는다 — 리포트만 산출 (재현 테스트는 임시 디렉토리 전용).
+
+## Evidence 사다리 (모든 finding의 상태)
+
+| 상태 | 의미 | 요건 |
+|---|---|---|
+| `SUSPECTED` | 에이전트 추론만 | claim + 출처 렌즈 |
+| `SUPPORTED` | 정적 증거 확보 | file + lines + symbol + execution_path + 코드 인용 |
+| `REPRODUCED` | 실패를 실제로 시연 | SUPPORTED + 실행된 실패 테스트/명령 |
+| `REJECTED` | 반증됨 | 반증 근거 인용 |
 
 ## 핵심 가치
 
 `/prism`은 Claude 5명 내부 ensemble. `/prism-codex`는 Codex 5명 ensemble. **`/prism-all`은 10명 cross-model ensemble**:
 
-- **같은 각도 + 두 엔진 = cross-model agreement** — false positive 가능성 최소
-- **같은 엔진 + 다른 각도 2+ = intra-model agreement** — 기존 prism 수준 신뢰
-- **한 엔진 한 각도 singleton** — Verifier 검증으로 필터
+- **같은 각도 + 두 엔진 = cross-model agreement** — 상관된 오해 가능성 최소 → **가장 높은 초기 신뢰의 후보**
+- **같은 엔진 + 다른 각도 2+ = intra-model agreement** — 같은 모델은 같은 오해를 반복할 수 있음 → 증거 없인 MEDIUM 상한
+- **한 엔진 한 각도 singleton** — 가장 낮은 초기 신뢰
 
-3 파일 × 2 엔진 벤치마크 기준: 각 엔진이 놓친 unique finding 10+건씩 → 두 엔진 합치면 커버리지 크게 증가.
+어느 티어든 **Evidence pass를 통과해야 SUPPORTED**가 된다. 3 파일 × 2 엔진 벤치마크 기준: 각 엔진이 놓친 unique finding 10+건씩 → 두 엔진 합치면 커버리지 크게 증가.
 
-## 5 각도 × 2 엔진 (10 discovery)
+## 렌즈 × 2 엔진 (10 discovery)
 
-| Agent | Claude | Codex (gpt-5.5) |
+기본은 **DEFECT 렌즈셋** (결함 탐지 전용 — 코드 대상):
+
+| Lens | Claude | Codex (gpt-5.5) |
 |---|---|---|
-| Conflict Detection | ✓ | ✓ |
-| Improvement | ✓ | ✓ |
-| Devil's Advocate | ✓ | ✓ |
-| Code Review | ✓ | ✓ |
-| Robustness (4-Axis) | ✓ | ✓ |
+| Correctness & Contracts | ✓ | ✓ |
+| Security & Trust Boundaries | ✓ | ✓ |
+| State, Concurrency & Recovery | ✓ | ✓ |
+| Integration & Regression | ✓ | ✓ |
+| Testability & Observability | ✓ | ✓ |
 
-+ **Verifier** 1콜 (기본 Claude, `--verifier=codex|both`로 override).
+- **Improvement 렌즈는 기본에서 제외** — 결함 리포트를 시끄럽게 만든다. `--include-improvements`로 6번째 렌즈로 추가(양 엔진), 결과는 `category: improvement`로 분리 집계.
+- `--lenses=classic` → 구 렌즈셋(Conflict/Improvement/Devil/CodeReview/Robustness). **비코드 대상(설계 문서·계획)은 classic 자동 선택.**
+- + **Evidence pass** 1콜 (기본 Claude, `--verifier=codex|both`로 override).
 
 ## 전제 (Prerequisite)
 
@@ -48,12 +63,16 @@ user-invocable: true
 
 | 형태 | 모드 |
 |---|---|
-| `/prism-all <target>` | 기본 — 10 discovery + Verifier |
-| `/prism-all <target> --quick` | Verifier 생략 |
-| `/prism-all <target> --adversarial` | Verifier가 REJECT 전 반대 주장 |
-| `/prism-all <target> --verifier=claude` | Verifier = Claude (기본) |
-| `/prism-all <target> --verifier=codex` | Verifier = Codex |
-| `/prism-all <target> --verifier=both` | 양쪽 Verifier 각각 singleton 판정, 둘 다 CONFIRMED면 확정 |
+| `/prism-all <target>` | 기본 — 10 discovery + Evidence pass |
+| `/prism-all <target> --quick` | Evidence pass 생략 — 전부 `SUSPECTED`로 보고 |
+| `/prism-all <target> --adversarial` | Evidence pass가 REJECT 확정 전 반대 주장 의무 |
+| `/prism-all <target> --reproduce` | + 재현 pass: 임시 디렉토리에 최소 실패 테스트 작성·실행 (SUPPORTED CRIT/HIGH 우선, 최대 5건) |
+| `/prism-all <target> --include-improvements` | Improvement 렌즈 추가(분리 집계) |
+| `/prism-all <target> --lenses=classic` | 구 렌즈셋 (비코드 대상은 자동) |
+| `/prism-all <target> --format json` | finding record v2 배열을 `prism-report.json`으로도 출력 |
+| `/prism-all <target> --verifier=claude` | Evidence pass = Claude (기본) |
+| `/prism-all <target> --verifier=codex` | Evidence pass = Codex |
+| `/prism-all <target> --verifier=both` | 양쪽이 각각 판정, 둘 다 SUPPORTED일 때만 SUPPORTED (엇갈림 = SUSPECTED) |
 | 자연어 | "prism all로", "크로스모델 prism" |
 
 ---
@@ -66,15 +85,17 @@ user-invocable: true
 
 Wall time ≈ max(Claude 5 parallel ≈ 20~40s, Codex 5 sequential ≈ 100~200s) = **Codex 쪽 병목** (~100~200s).
 
-Agent 프롬프트는 **이 SKILL.md가 자체 보유** (독립성):
+Agent 프롬프트는 **이 SKILL.md가 자체 보유** (독립성). DEFECT 렌즈셋(기본):
 
-**1. Conflict Detection** — 충돌/모순/통합 위험. severity CRIT/HIGH/MED/LOW.
-**2. Improvement** — 현재 → 개선안 → 근거. 효율/UX/누락/통합.
-**3. Devil's Advocate** — 약점/실패모드, self-bias, Goodhart, 회귀 위험. severity + 완화.
-**4. Code Review** — 명확성/완전성/정확성/일관성. `[SECTION] Issue → Fix`.
-**5. Robustness (4-Axis)** — Concurrency / Failure&Recovery / Data Integrity / State Transitions. `[Axis N] Scenario → Current → Risk → Fix` + Coverage Summary.
+**1. Correctness & Contracts** — 틀린 결과/경계값/에러 경로/불변식/API 계약 위반. "구체 입력 → 틀린 출력"이 추상적 우려보다 우선.
+**2. Security & Trust Boundaries** — 입력 검증/인가 공백/injection/secret 노출/unsafe default. 각 finding에 공격자 전제조건 명시.
+**3. State, Concurrency & Recovery** — 동시 호출·중간 크래시·재시도. race/lost update/TOCTOU/비멱등 재시도/고아·고착 상태. 트리거 시퀀스 명시.
+**4. Integration & Regression** — 호출자 계약 파괴/스키마·설정 드리프트/하위호환/숨은 결합. 영향받는 호출자·소비자 명명.
+**5. Testability & Observability** — 삼켜진 예외/조용한 폴백/거짓 로그/테스트 불가 seam/신호 없는 실패 모드.
 
-(상세 프롬프트 텍스트는 prism-codex SKILL.md와 동일하며, 이 파일 내부에도 복사됨 — 두 skill 독립 유지.)
+(`--include-improvements` 시 6번: **Improvement** — 현재 → 개선안 → 근거. `--lenses=classic` 시 구 5종: Conflict/Improvement/Devil/CodeReview/Robustness — 기존 문구 유지.)
+
+모든 discovery 프롬프트 공통 계약: **"너는 의심(suspicion)을 생산한다 — 확정은 Evidence pass의 일이다. LOCUS는 가능한 한 `file:lines@symbol`로 정밀하게."**
 
 ### 출력 레코드 포맷 v1 (A: 구조화 출력 - 양 엔진 공통)
 
@@ -95,43 +116,78 @@ MED  | <locus> | <problem> -> <fix>
 
 ---
 
-## Synthesis Triage with Cross-Model Promotion
+## Synthesis Triage — 후보 분류 (확정 아님)
 
-10 응답 수집 후 3-tier 분류:
+10 응답 수집 후 3-tier 분류. **Tier는 초기 신뢰(우선순위)만 결정한다 — 어느 Tier도 자동 확정되지 않고, 전부 Evidence pass로 간다.**
 
-### Tier 1 — Cross-model agreement (최고 신뢰)
-같은 각도에서 Claude + Codex 둘 다 flag. 레이블: `[cross-model/<angle>]`. severity = union (conservative, 높은 쪽).
+### Tier 1 — Cross-model agreement (최고 초기 신뢰)
+같은 렌즈에서 Claude + Codex 둘 다 flag. 레이블: `[cross-model/<lens>]`. severity = union (높은 쪽). Evidence pass에서 **가장 먼저** 처리.
 
-### Tier 2 — Intra-model multi-angle (중간 신뢰)
-한 엔진의 2+ 각도가 동일 finding. 레이블: `[claude/multi]` 또는 `[codex/multi]`. 기존 prism의 "2+ agents" 수준.
+### Tier 2 — Intra-model multi-lens (중간 초기 신뢰)
+한 엔진의 2+ 렌즈가 동일 finding. 레이블: `[claude/multi]` 또는 `[codex/multi]`. ⚠️ **같은 모델의 에이전트들은 같은 오해를 반복할 수 있다** — 이 티어는 증거 없이는 confidence MEDIUM을 넘지 못한다 (구버전의 "2+ agents = 자동 CONFIRMED" 규칙은 폐기).
 
-### Tier 3 — Singleton (Verifier 검증 대상)
-한 엔진의 한 각도만 flag. 레이블: `[claude/<angle>]` 또는 `[codex/<angle>]`. Pass 2로 감.
+### Tier 3 — Singleton (최저 초기 신뢰)
+한 엔진의 한 렌즈만 flag. 레이블: `[claude/<lens>]` 또는 `[codex/<lens>]`.
 
 ### Conflicts
-두 엔진이 반대 방향 조언 → "Conflicting" 섹션에 양쪽 표시, Verifier에게 판정 맡기거나 main이 한 줄 근거로 선택.
+두 엔진이 반대 방향 조언 → "Conflicting" 섹션에 양쪽 표시. Evidence pass가 **인용 근거로만** 한쪽을 선택.
 
 ### Short-circuit
-- `--quick` → Pass 2 스킵
-- Tier 3 = 0 → Pass 2 스킵
-- Tier 3 ≤ 3 → Verifier에 Tier 1/2도 함께 전달 (저렴)
+- `--quick` → Pass 2 스킵, 전부 `SUSPECTED`로 보고 (Tier 레이블 유지)
+- 후보 0건 → Pass 2 스킵
 
 ---
 
-## Pass 2 — Verifier (singleton 배치 검증)
+## Pass 2 — Evidence pass (전 후보 배치 검증)
 
-**1 콜로 모든 singleton 판정** (선택된 엔진):
+**1 콜로 모든 후보 판정** (선택된 엔진). Verifier가 아니라 **Evidence Agent** — 의견 대조가 아니라 코드 접지(grounding)가 일이다:
 
-> 너는 Verifier. 10 리뷰어 (Claude 5 + Codex 5)가 같은 target을 분석했다. 각 singleton (1명만 지적) 마다 `CONFIRMED` / `REJECTED` / `DEPENDS` 판정.
+> 너는 Evidence Agent. 10 리뷰어(Claude 5 + Codex 5)가 같은 target을 분석해 아래 후보들을 냈다. 각 후보를 **실제 코드에 접지시키거나, 죽여라.** 리뷰어 말은 절대 그대로 믿지 않는다. 후보마다 순서대로:
 >
-> 규칙:
-> - target 전체 + 10 Pass 1 응답 전부 + singleton list 읽고 판정
-> - CONFIRMED/REJECTED/DEPENDS (새 finding 발명 금지)
-> - severity 조정 가능 (CONFIRMED 시)
+> 1. **위치 고정**: 정확한 `file`, `lines`, `symbol`. 고정 불가 → `SUSPECTED` 유지 + 무엇이 부족했는지 기록.
+> 2. **실행 경로 추적**: 진입→결함까지 순서 있는 호출/분기 단계.
+> 3. **증거 인용**: claim을 참으로 만드는 줄을 `file:line — 인용`으로.
+> 4. **전제조건 점검**: 공격자/호출자/상태가 충족해야 할 조건. 이 코드베이스에서 불가능하면 반증 인용과 함께 `REJECTED`.
+> 5. **판정**: `SUPPORTED`(1~3 전부 확보) / `REJECTED`(반증 인용) / `SUSPECTED`(고정 불가 또는 도메인 지식 필요 — 부족한 컨텍스트를 `REQUIRES_DOMAIN_CONFIRMATION: <질문>` 형태로 명시).
+> 6. severity 조정 가능(한 문장 근거). 새 finding 발명 금지.
+> 7. `SUPPORTED`마다 `suggested_test`(테스트 함수명 + 한 줄 시나리오) 명명 — 재현 미요청이어도.
+> 8. 후보마다 finding record v2(아래 스키마) 1건 출력. `evidence_strength`: NONE/WEAK(위치만)/MEDIUM(위치+경로+인용)/STRONG(재현 — 재현 pass만 부여).
 >
-> `--verifier=both`: Claude Verifier 1콜 + Codex Verifier 1콜. 두 Verifier 모두 CONFIRMED = 확정. 엇갈림 = DEPENDS 처리.
->
-> `--adversarial`: REJECT 하기 전 반박 시도 — 더 구체적이고 더 잘 근거 있어야 REJECT.
+> `--verifier=both`: Claude 1콜 + Codex 1콜, 둘 다 SUPPORTED일 때만 SUPPORTED (엇갈림 = SUSPECTED).
+> `--adversarial`: REJECT 확정 전 리뷰어 편에서 반박 시도 — 반박이 원 주장보다 구체적·근거 우위일 때만 REJECT.
+
+---
+
+## Pass 3 — 재현 (`--reproduce`)
+
+프로젝트는 **절대 수정하지 않는다** — 재현은 일회용 샌드박스에서.
+
+- 대상: `SUPPORTED`만, CRIT/HIGH 우선, **런당 최대 5건**(초과분은 `STATIC_EVIDENCE_ONLY`로 명시).
+- 절차: ① 기존 테스트 먼저 검색(이미 커버하는 테스트가 증명/반증할 수 있음) ② 테스트 러너 감지(pytest/vitest/jest/node --test/go test/cargo test — 없으면 `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT`) ③ OS 임시 디렉토리(`$TMPDIR/prism-tests/`)에 최소 실패 테스트 작성 — 프로젝트 트리에 쓰기 금지, 프로젝트에 의존성 설치 금지 ④ 타임아웃 걸고 실행, 명령과 결과를 원문 그대로 기록.
+- 분류: `REPRODUCED` / `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT` / `STATIC_EVIDENCE_ONLY` / `REQUIRES_EXTERNAL_SERVICE` / `REQUIRES_DOMAIN_CONFIRMATION`.
+- **테스트가 통과하면(버그 미발현) 그건 반증** — `SUSPECTED`/`REJECTED`로 강등하고 통과 로그 인용. 재현 시도가 claim을 반박하는 것도 확인만큼 가치 있다.
+- 종료 시 임시 디렉토리 정리, 테스트 소스는 **리포트에 보존**(운영자가 실제 스위트로 승격할 수 있게).
+- 재현을 안 돌린 사실을 숨기지 않는다 — 모든 finding이 `reproduction.status`를 갖고, `STATIC_EVIDENCE_ONLY`는 정직하고 흔한 값이다.
+
+---
+
+## Finding record v2 + Confidence
+
+record 스키마는 `/prism` SKILL.md와 동일 (id/fingerprint/file/lines/symbol/category/severity/status/claim/preconditions/execution_path/evidence/reproduction/confidence). `SUPPORTED` 이상은 file/lines/symbol/execution_path/인용이 **필수**. fingerprint = `sha1("<file>|<symbol>|<category>")[:8]` — 런 간 dedup 용.
+
+```
+Confidence = model diversity + lens diversity + direct code evidence + executable reproduction
+             − missing context − unverifiable assumptions
+```
+
+| 신호 조합 | confidence.label |
+|---|---|
+| 한 렌즈 singleton, 증거 없음 | LOW |
+| 같은 엔진 2+ 렌즈 합의, 증거 없음 | **MEDIUM (상한)** — 같은 모델은 같은 오해 반복 가능 |
+| Claude+Codex 크로스모델 합의, 증거 없음 | MEDIUM-HIGH |
+| (합의 무관) 위치+실행경로+인용 확보 | HIGH |
+| 크로스모델 합의 + 정확한 코드 경로 | HIGH+ |
+| 실패 테스트 재현 | VERY HIGH |
 
 ---
 
@@ -139,27 +195,33 @@ MED  | <locus> | <problem> -> <fix>
 
 ```
 PRISM-ALL REPORT — {target} — {timestamp}
-Mode: {verify | quick | adversarial}
-Engines: Claude 5 + Codex 5 (gpt-5.5)
-Verifier: {claude | codex | both}
+Mode: {verify | quick | adversarial} [+reproduce]
+Engines: Claude 5 + Codex 5 (gpt-5.5) · Evidence: {claude | codex | both}
+Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
-## CRITICAL (must fix)
-- [cross-model/conflict] Finding → Fix         # Tier 1
-- [claude/multi] Finding → Fix                 # Tier 2
-- [codex/devil → verified] Finding → Fix (Verifier: reason)   # Tier 3 passed
+## REPRODUCED (실패 시연됨)
+- PRISM-003 [HIGH|security|VERY HIGH] file:lines@symbol — claim
+  [cross-model/security] path: ... | repro: <command> → FAILED as predicted | fix: ...
 
-## HIGH / MEDIUM / LOW ...
+## SUPPORTED (코드 경로 증거, 미실행)
+- PRISM-001 [...|HIGH] file:lines@symbol — claim
+  [claude/multi] evidence: file:line — 인용 | repro: STATIC_EVIDENCE_ONLY | suggested_test: ...
 
-## Rejected Singletons (Verifier dismissed)
-## Depends-on-Context (Verifier DEPENDS)
-## Cross-Model Agreements (Tier 1 summary)
-## Intra-Model Multi-Angle (Tier 2 summary)
-## Engine-Unique Findings (for reference)
-  ### Claude-only (what Codex missed)
-  ### Codex-only (what Claude missed)
-## Conflicting Advice (if any)
+## SUSPECTED (추론만 — 확인 필요)
+- PRISM-007 [...] — claim — missing: REQUIRES_DOMAIN_CONFIRMATION: <운영자에게 물을 질문>
+
+## REJECTED (투명성)
+- [codex/correctness] claim — 반증: file:line — 인용
+
+## IMPROVEMENTS (--include-improvements 시만)
+## Engine-Unique Findings (참고)
+  ### Claude-only (Codex가 놓친 것) / ### Codex-only (Claude가 놓친 것)
+## Conflicting Advice (있으면)
 ## Recommended Action Order
+REPRODUCED 먼저, 그다음 SUPPORTED를 severity 순으로. SUSPECTED는 task가 아니라 질문으로.
 ```
+
+`--format json`: 위와 함께 `prism-report.json` 출력 — `{ "meta": {...}, "findings": [<record v2>...] }`. fingerprint로 런 간 중복 제거 가능. (SARIF: 로드맵.)
 
 ---
 
@@ -217,8 +279,11 @@ emit secrets in the first place.
 ### 호출 템플릿
 
 ```bash
-DIR="docs/prism-all/<slug>"
-AGENT="<conflict|improvement|devil|code-review|robustness>"
+# 산출물은 기본 임시 디렉토리 — repo를 오염시키지 않는다 (2026-07 실사용 피드백).
+#  기록을 repo에 남기고 싶으면 --artifacts=docs 로 기존 경로(docs/prism-all/<slug>) 사용
+#  + 그 경로를 .gitignore에 추가할 것.
+DIR="${TMPDIR:-/tmp}/prism-all/<slug>"        # --artifacts=docs -> docs/prism-all/<slug>
+AGENT="<correctness|security|state|integration|testability>"   # classic: conflict|improvement|devil|code-review|robustness
 PROMPT="$DIR/pass1.codex.$AGENT.prompt.txt"
 OUT="$DIR/pass1.codex.$AGENT.codex.txt"
 
@@ -322,12 +387,13 @@ fi
 
 ## 비용 / 속도
 
-| Mode | Claude 콜 | Codex 콜 | Verifier | wall time | 상대 비용 |
-|---|---|---|---|---|---|
-| `--quick` | 5 | 5 | 0 | ~100~200s | 2.0× prism |
-| default (verify) | 5 | 5 | 1 (batched) | ~120~220s | 2.2~2.4× |
-| `--adversarial` | 5 | 5 | 1 | ~120~220s | 2.2~2.4× |
-| `--verifier=both` | 5 | 5 | 2 (both batched) | ~140~240s | 2.4~2.6× |
+| Mode | Claude 콜 | Codex 콜 | Evidence | Repro | wall time | 상대 비용 |
+|---|---|---|---|---|---|---|
+| `--quick` | 5 | 5 | 0 | 0 | ~100~200s | 2.0× prism |
+| default | 5 | 5 | 1 (batched) | 0 | ~120~220s | 2.2~2.4× |
+| `--adversarial` | 5 | 5 | 1 | 0 | ~120~220s | 2.2~2.4× |
+| `--verifier=both` | 5 | 5 | 2 (batched×2) | 0 | ~140~240s | 2.4~2.6× |
+| `--reproduce` | 5 | 5 | 1 | ≤5 test runs | ~180~320s | 2.6~3.2× |
 
 ## 자립성 검증
 
@@ -348,7 +414,11 @@ node verify-independence.js --strict   # Codex CLI >= 0.125.0 포함
 ## 안티패턴
 
 - ❌ Claude 5 + Codex 5를 순차로 — 반드시 한 메시지 안 병렬 (parallel tool calls)
-- ❌ Cross-model agreement 있는데 singleton 급으로 격하 — Tier 1 고정
+- ❌ **합의만으로 확정** — 같은 엔진이든 크로스모델이든, Evidence pass 없이 SUPPORTED 부여 금지. 합의는 우선순위다.
+- ❌ **위치 없는 SUPPORTED** — file/lines/symbol/실행경로/인용 없이 SUPPORTED 라벨 금지. 접지 못 하면 SUSPECTED로 정직하게.
+- ❌ **재현 테스트를 프로젝트 트리에 작성** — 임시 디렉토리 전용. 프로젝트는 read-only.
+- ❌ **재현 실패(테스트 통과)를 조용히 버림** — 반증도 기록: 강등 + 통과 로그 인용.
+- ❌ Cross-model agreement 있는데 singleton 급으로 격하 — Tier 1 우선순위 고정
 - ❌ 한 엔진 실패 시 조용히 다른 쪽만으로 계속 — fallback 태그 + state 기록
 - ❌ argv로 Codex 호출 — tempfile + stdin
 - ❌ target 수정 — 항상 read-only report only
