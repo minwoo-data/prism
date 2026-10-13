@@ -72,8 +72,8 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 
 ```
 /prism src/services/auth.py                 # 기본: 5 렌즈 + Evidence pass
-/prism src/services/auth.py --quick         # 1 pass만, verify skip
-/prism src/services/auth.py --adversarial   # 1 pass + REJECT 재검증
+/prism src/services/auth.py --quick         # discovery만 (전부 SUSPECTED)
+/prism src/services/auth.py --adversarial   # Evidence pass가 자기 REJECT에 반박
 /prism .                                    # 프로젝트 전체 리뷰
 ```
 
