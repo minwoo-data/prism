@@ -8,6 +8,9 @@ placeholder you replace (a line that still contains a placeholder value is disca
 {"lens":"<class|route|subtract>","title":"<short title>","problem":"<the real problem this solves>","grounds":["<PRISM-NNN or path:lines — verbatim quote>"],"proposal":"<what to do instead>","replaces":"<what it replaces or removes, or none>","cost":"<S|M|L>","cost_note":"<one line>","effect":"<expected effect and how you would know it worked>","risk":"<what could go wrong, and the mitigation>"}
 <<<END>>>
 
+Only the last block of your message that is empty or holds a valid line counts: an earlier draft
+is ignored. A block without its `<<<END>>>` line is discarded.
+
 ### Fields (all required)
 
 | Field | Rule |
@@ -23,16 +26,19 @@ placeholder you replace (a line that still contains a placeholder value is disca
 | `effect` | at most 500 characters. The expected effect, and how you would know it worked |
 | `risk` | at most 500 characters. What could go wrong, and the mitigation |
 
+Every text is flattened to one line (line breaks become spaces).
+
 ### Grounding (a script checks every idea; an idea with no valid ground is discarded)
 
 - **Finding ID:** counts only if the FINDINGS list in this prompt has it as `SUPPORTED` or
   `REPRODUCED`. `SUSPECTED` and `REJECTED` findings do not count. Without a FINDINGS list, use quotes.
 - **Quote:** `path:lines — quote`. `path` is relative to the repository root, or a context file's
   name exactly as given (`CONTEXT: <name>`). `lines` is `N` or `N-M`, spanning at most 40 lines. The
-  quote is copied verbatim from those lines (whitespace and case may differ, ±2 lines of slack), at
-  least 8 characters. Paraphrases fail.
-- Paths outside the repository root that are not given context files are rejected, and so are
-  credential files (`.env`, keys, tokens, `*secret*`/`*credential*` config). Never quote secrets.
+  quote is copied verbatim from those lines (whitespace and case may differ, ±2 lines of slack) and
+  is at least 8 characters long. Paraphrases fail.
+- Refused as grounds: paths outside the repository root that are not given context files, network
+  paths, credential files (`.env`, keys, tokens, `*secret*`/`*credential*` config), version-control
+  internals (`.git/...`), and any quote that looks like a secret. Never quote secrets.
 
 ### Limits
 

@@ -7,24 +7,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-prism-ideas, slice S1 of `docs/design/prism-ideas.md`: the idea pass's contracts and its
-deterministic gate. No skill calls it yet, so prism's behavior does not change.
+prism-ideas, slice S1: the idea pass's contracts and its deterministic gate. No skill calls it yet,
+so prism's behavior does not change.
 
 ### Added
 - **`verify-ideas.js`** (canonical in prism-all, synced to prism and prism-codex):
-  - `gate` keeps the richest `PRISM-IDEAS v1` fence (ties go to the last fence) and validates every
-    JSON line. Ideas past the 3rd per lens become `OVER_CAP`.
-  - `gate` checks every ground. A finding ID counts only if `checked.json` has it as
-    `SUPPORTED`/`REPRODUCED`. A `path:lines — quote` counts only if the quote is really at those
-    lines, in a file under the repo root or a `--context` file. Quotes span at most 40 lines, are at
-    least 8 characters, and never come from credential files. No valid ground means `UNGROUNDED`.
-  - `check` applies `PRISM-IDEA-CHECK v1` verdicts. An "exists"/"conflicts" `DROP` without a
-    verified quote becomes `WEAK`, and a missing verdict becomes `UNCHECKED`.
-  - `rank` sets `cross_model` only from explicit groups and orders ideas by content alone.
-  - `--selftest` (47 cases; 24 deliberate code and contract breaks are all caught).
+  - `gate` takes the last closed `PRISM-IDEAS v1` fence that is empty or holds a valid idea (a
+    draft, an echoed example or a planted fence earlier in the output never wins; an unclosed fence
+    is never an answer), validates every JSON line and flattens every text to one line. Ideas past
+    the 3rd per lens become `OVER_CAP`.
+  - `gate` checks every ground. A finding ID counts only if the final `checked.json` has it as
+    `SUPPORTED`/`REPRODUCED` and `verify-evidence.js` quote-checked it. A `path:lines — quote`
+    counts only if the quote is really at those lines, in a file under the repo root or a
+    `--context` file. Quotes span at most 40 lines and are at least 8 characters; network paths,
+    credential files (the `codex-run.sh` globs, on the real path), `.git` internals and
+    secret-shaped quotes are refused. No valid ground means `UNGROUNDED`, and a failed ground's text
+    is never kept.
+  - Idea keys are `<engine>-<n>-<hash>`, so a verdict or group from another gate run cannot land on
+    a different idea.
+  - `check` applies `PRISM-IDEA-CHECK v1` verdicts, one checker output per batch. A `DROP` without
+    a verified quote becomes `WEAK` unless its basis is `not-solving`; a missing verdict becomes
+    `UNCHECKED`, and a rejected one says why. A failed batch makes the result `partial` or
+    `degraded`; two checkers that disagree leave the stricter verdict.
+  - `rank` sets `cross_model` only from explicit groups, orders ideas by content alone, and reports
+    degraded proposers and checkers in `meta`.
+  - Unreadable inputs, a findings file of the wrong shape and a missing `verify-evidence.js` exit 2.
+  - `--selftest` (76 cases; every deliberate code and contract break tried is caught).
 - **`templates/ideas-contract.md`** and **`templates/idea-check-contract.md`**: the two output
   formats, each in one file that is appended verbatim and last to every prompt that needs it.
-  The selftest fails if a contract stops naming a field or value the script enforces.
+  The selftest fails if a contract stops naming a field, value or limit the script enforces.
 - **`references/ideas.md`**: the three idea lenses (class / route / subtract), the checker prompt,
   the prompt assembly order and the ranking rules.
 

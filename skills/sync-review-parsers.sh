@@ -57,6 +57,6 @@ for rel in "${expected[@]}"; do
   mv -f "$tmp/$rel" "$here/$rel.sync.$$" || { echo "sync FAILED: cannot stage $rel" >&2; exit 1; }
   mv -f "$here/$rel.sync.$$" "$here/$rel" || { echo "sync FAILED: cannot place $rel" >&2; exit 1; }
 done
-chmod +x "$here/prism-all/codex-run.sh" "$here/prism-codex/codex-run.sh" "$here"/*/verify-ideas.js
+chmod +x "$here/prism-all/codex-run.sh" "$here/prism-codex/codex-run.sh"
 rm -f "$here/prism/references/codex-invocation.md" "$here/prism/codex-run.sh"
 echo "synced ${#expected[@]} copies -> prism-codex, prism$([ "$drift" = 0 ] && echo ' (no drift found)' || echo ' (drift above was overwritten)')"

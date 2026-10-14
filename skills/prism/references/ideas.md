@@ -1,8 +1,7 @@
 # Idea pass (prism-ideas)
 
 Canonical copy lives in `prism-all/references/`; synced byte-identical to `prism` and `prism-codex`
-by `skills/sync-review-parsers.sh`. Design and decisions: `docs/design/prism-ideas.md` in the prism
-repository.
+by `skills/sync-review-parsers.sh`.
 
 prism's defect lenses answer "is this wrong?". The idea pass answers "what should we do instead?"
 and grades the answers. It runs after the Evidence pass (Pass 4) when prism runs it as a companion,
@@ -18,7 +17,17 @@ Two output formats belong to this pass. Each lives in exactly one file, and that
 | Check | `<<<PRISM-IDEA-CHECK v1>>>` | `templates/idea-check-contract.md` |
 
 Never restate either format in a prompt or in this file; `verify-ideas.js --selftest` fails if a
-contract file is missing or stops naming a field or value the script enforces.
+contract file is missing or stops naming a field, value or limit the script enforces.
+
+## Findings the pass may cite
+
+`--findings` is the **final** `checked.json` of the run, the one the defect report is built from.
+Without `--reproduce` that is the Pass 2 output. With `--reproduce`, Pass 3 changes statuses (to
+`REPRODUCED`, or down to `SUSPECTED`), so run `verify-evidence.js` again on the post-Pass-3 records
+first; otherwise `REPRODUCED` never reaches the idea pass and a refuted finding still grounds ideas.
+Only records that `verify-evidence.js` quote-checked count (`_evidence_check.quote_found`), so the
+pre-check `records.json` grounds nothing. A file of the wrong shape is a usage error; duplicate IDs
+ground nothing.
 
 ## 4a. Propose
 
@@ -27,10 +36,13 @@ its prompt in this order (identical for Claude and Codex; Codex additionally get
 preamble first):
 
 1. **Target content**, verbatim (the same prefix the discovery lenses got).
-2. **FINDINGS** (companion mode only): every `SUPPORTED` / `REPRODUCED` record from `checked.json`,
-   one line each: `PRISM-NNN | STATUS | SEV | file:lines | claim`. Standalone mode has none.
+2. **FINDINGS** (companion mode only): every `SUPPORTED` / `REPRODUCED` record of the final
+   `checked.json`, one line each: `PRISM-NNN | STATUS | SEV | file:lines | claim`. Standalone mode
+   has none.
 3. **CONTEXT** files (`--context`), each headed `CONTEXT: <name as given>`. Data an idea needs as
-   ground (exported sheets, logs, measurements) must arrive this way so its quote can be checked.
+   ground (exported sheets, logs, measurements) must arrive this way so its quote can be checked. A
+   target that lives **outside the repository root** (another drive, a temp diff-context file) is
+   passed as `--context` too; otherwise every quote of it is `PATH_OUTSIDE_ROOT`.
 4. **The idea prompt** below.
 5. **`templates/ideas-contract.md`**, appended last.
 
@@ -46,8 +58,8 @@ Idea prompt:
 >   whole class instead of patching each instance? Example: rules that live only in prompt text
 >   move into a script that enforces them.
 > - **route (a different route):** another mechanism that reaches the same goal and sidesteps the
->   problem. Example: keyword scoring under-rates good matches, so pre-judge from the posting body
->   first and score second.
+>   problem. Example: a loop that re-reads a whole file every second to notice changes is replaced
+>   by a change event.
 > - **subtract (remove or reuse):** what can be deleted, merged, or replaced by something that
 >   already exists? Name the existing thing with `path:lines` and quote it. Search the repository
 >   before claiming something does or does not exist.
@@ -62,27 +74,38 @@ node "<skill dir>/verify-ideas.js" gate <proposer-out> <claude|codex> <repo-root
      [--findings checked.json] [--context <file>]... > <engine>.gated.json
 ```
 
-Enforced in code: the richest `PRISM-IDEAS v1` fence wins (ties go to the last fence, so an echoed
-example cannot beat the real answer); JSON shape, enums, lengths and placeholder values; the first 3
-format-valid ideas per lens are kept and later ones are `OVER_CAP`; every ground is checked (finding
-must be `SUPPORTED`/`REPRODUCED` in `checked.json`; a quote must sit at the cited lines of a file
-under the repo root or a `--context` file, span ≤ 40 lines, ≥ 8 characters, no credential files); no
-valid ground, or a `problem` that names an unverified finding, makes the idea `UNGROUNDED`. Status
-per idea: `GATED` / `UNGROUNDED` / `OVER_CAP` / `INVALID`. No fence, or fences with only garbage,
-gives `degraded: true` (infra, not an idea).
+Enforced in code:
+- **Which fence:** the last closed `PRISM-IDEAS v1` fence that is empty or holds a valid idea. A
+  draft, an echoed contract example or a planted fence earlier in the output never wins; an empty
+  final fence means "no ideas" (`clean`); a fence without `<<<END>>>` is never an answer.
+- **Shape:** JSON shape, enums, lengths, placeholder values; every text flattened to one line (no
+  control, line-break or bidi characters).
+- **Cap:** the first 3 format-valid ideas per lens are kept, later ones are `OVER_CAP`.
+- **Grounds:** a finding must be machine-checked `SUPPORTED`/`REPRODUCED` (see above). A quote must
+  sit at the cited lines (±2) of a file under the repo root or a `--context` file, span ≤ 40 lines,
+  be ≥ 8 characters, and is refused for network paths, credential files (the same globs
+  `codex-run.sh` refuses, checked on the real path), `.git`/`.hg`/`.svn` internals and
+  secret-shaped text. A repo file always wins over a `--context` file with the same basename.
+- No valid ground, or a `problem` that names an unverified finding, makes the idea `UNGROUNDED`.
+- The text of a failed ground is never kept: only `path:lines` and the reason.
+- Status per idea: `GATED` / `UNGROUNDED` / `OVER_CAP` / `INVALID`. No fence, or no fence with a
+  valid line, gives `degraded: true` (infra, not an idea).
+- The output records the resolved repo root; `check` refuses a different one.
 
-Keys are `<engine>-<n>` in emission order (`claude-2`). They are what the checker answers to.
+Keys are `<engine>-<n>-<hash>` (`claude-2-3f9a`): emission order plus a hash of the idea's lens,
+title and proposal. A verdict or group written for another gate run does not match and is counted
+as an unknown key instead of landing on a different idea.
 
 ## 4c. Check
 
 An independent checker rates every `GATED` idea. It sees the ideas (key, lens, title, problem,
-grounds, proposal, replaces, cost, effect, risk) and has Read/Grep/Glob on the repository, but not
-the proposer's reasoning. Batches of at most 8 ideas per call. Append
+verified grounds, proposal, replaces, cost, effect, risk) and has Read/Grep/Glob on the repository,
+but not the proposer's reasoning. Batches of at most 8 ideas per call. Append
 `templates/idea-check-contract.md` last.
 
 Who checks: in `/prism` and `/prism-codex`, a separate agent of the same engine. In `/prism-all`,
-the other engine (Codex checks Claude's ideas, Claude checks Codex's); ideas grouped as cross-model
-before checking are checked once, by the `--verifier` engine.
+the other engine (Codex checks Claude's ideas, Claude checks Codex's). Every idea is checked once;
+grouping comes after the check (4d).
 
 Checker prompt:
 
@@ -96,43 +119,62 @@ Checker prompt:
 > 4. Give the verdict.
 
 ```
-node "<skill dir>/verify-ideas.js" check <engine>.gated.json <checker-out> <repo-root> \
-     [--also <checker-out>]... [--context <file>]... > <engine>.checked-ideas.json
+node "<skill dir>/verify-ideas.js" check <engine>.gated.json <batch-1-out> <repo-root> \
+     [--also <batch-2-out>]... [--context <file>]... > <engine>.checked-ideas.json
 ```
 
-Enforced in code: the last verdict per key wins across all `PRISM-IDEA-CHECK v1` fences (batches may
-be concatenated or passed with `--also`); a `DROP` with basis `exists`/`conflicts` whose quote does
-not verify becomes `WEAK` (note `DROP_QUOTE_UNVERIFIED`); an unanswered key becomes `UNCHECKED`;
-unknown keys are ignored and counted.
+Enforced in code:
+- The input must be the gate output; a re-check starts again from `gated.json` with every batch.
+- One checker output per batch file. In each, the last closed `PRISM-IDEA-CHECK v1` fence counts;
+  within it the last line for a key wins.
+- A `DROP` stands only on a quote that verifies, unless its basis is `not-solving`; otherwise it
+  becomes `WEAK` (note `DROP_QUOTE_UNVERIFIED`). A failed quote's text is never kept.
+- An unanswered key becomes `UNCHECKED` (note `NO_VERDICT`, or `VERDICT_REJECTED:<reason>` when its
+  line broke the contract). Unknown keys are ignored and counted.
+- If two batch files answer the same key differently, the stricter verdict stands
+  (`CHECKERS_DISAGREE`).
+- A batch file without a usable fence (a `[fallback: ...]` marker, an empty answer) is a failed
+  batch: `check.partial` (some keys answered) or `check.degraded` (none answered). Nothing GATED
+  means neither.
+- An unreadable input file is a usage error (exit 2), never an empty answer.
 
 ## 4d. Group and rank
 
 Grouping is semantic, so the main agent does it: ideas that propose the same change are written to a
-groups file as explicit key lists, `[["claude-2","codex-1"], ...]`. The script never guesses a
-group, and `cross_model` is set only for a group whose `GATED` members come from two engines.
+groups file as explicit key lists, `[["claude-2-3f9a","codex-1-0b7e"], ...]`. The script never
+guesses a group, and `cross_model` is set only for a group whose `GATED` members come from two
+engines.
 
 ```
 node "<skill dir>/verify-ideas.js" rank <engine>.checked-ideas.json... [--groups groups.json] > ideas.json
 ```
 
-A group's verdict is the worst verdict among its checked members (`UNCHECKED` members are ignored
-unless none was checked), so agreement never overrides a checker's finding. `DROP` entries go to
-`dropped`; everything else is ordered by: `KEEP` before `WEAK` before `UNCHECKED` → cross-model
-before single → replaces something before additive (`replaces: none`) → cost `S` < `M` < `L` (the
-checker's corrected cost when given) → ground strength `REPRODUCED` > `SUPPORTED` > quote only →
-title, engine, key. The order depends only on content, never on input order. Entries get `IDEA-n`.
-`ideas.json` also carries `meta` (proposed, grounded, keep, weak, drop, unchecked, ungrounded,
-over_cap, invalid, bad_lines, merged_away, engines, degraded engines) for `meta.ideas` in the report.
+`rank` takes check outputs; a gate output is accepted only when it has nothing to check (an engine
+that degraded or proposed nothing). A group's verdict is the worst verdict among its checked members
+(`UNCHECKED` members are ignored unless none was checked), so agreement never overrides a checker's
+finding. `DROP` entries go to `dropped`; everything else is ordered by: `KEEP` before `WEAK` before
+`UNCHECKED` → cross-model before single → replaces something before additive (`replaces: none`) →
+cost `S` < `M` < `L` (the checker's corrected cost when given) → ground strength `REPRODUCED` >
+`SUPPORTED` > quote only → title, engine, key. The order depends only on content, never on input
+order. Entries get `IDEA-n` and carry `grounds_failed` (how many of their grounds failed).
+
+`ideas.json` also carries `meta` for `meta.ideas` in the report: `proposed`, `grounded`, `keep`,
+`weak`, `drop`, `unchecked`, `merged_away`, `ungrounded`, `over_cap`, `invalid`, `bad_lines`,
+`overflow`, `unclosed`, `engines`, `degraded_engines` (proposer failed), `check_degraded` (checker
+answered nothing), `check_partial` (a batch failed or keys went unanswered) and `check` (the
+checkers' failed batches, rejected lines, unknown and repeated keys, disagreements). Identity:
+`grounded = keep + weak + drop + unchecked + merged_away`.
 
 ## Report section
 
 ```
 ## IDEAS (alternatives, not defects; not in the action order)
-Ideas: 14 proposed -> 9 grounded -> 6 keep, 2 weak, 1 drop  (ungrounded 3, over cap 2)
+Ideas: 14 proposed -> 9 grounded -> 5 keep, 2 weak, 1 drop, 0 unchecked (merged 1; ungrounded 3, over cap 2)
 - IDEA-1 [cross-model | route | cost M | KEEP] <title>
   problem: <problem> · replaces: <replaces> · effect: <effect> · risk: <risk>
   grounds: PRISM-004 (SUPPORTED), <path>:<lines> — "<quote>"
 ```
 
-Certainty language follows the verdict: `KEEP` "worth doing", `WEAK` "worth a look", `UNCHECKED`
-"not checked".
+Add a `Degraded:` line naming `degraded_engines`, `check_degraded` and `check_partial` when any is
+non-empty. Certainty language follows the verdict: `KEEP` "worth doing", `WEAK` "worth a look",
+`UNCHECKED` "not checked".
