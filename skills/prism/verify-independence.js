@@ -90,11 +90,12 @@ function checkNoCrossRefs() {
 function checkScripts() {
   for (const rel of SELFTEST_SCRIPTS) {
     const script = path.join(SELF_DIR, rel);
+    const runner = rel.endsWith('.sh') ? 'bash' : 'node';
     try {
-      execSync(`node "${script}" --selftest`, { stdio: ['ignore', 'ignore', 'ignore'] });
+      execSync(`${runner} "${script}" --selftest`, { stdio: ['ignore', 'ignore', 'ignore'] });
       ok(`selftest passed: ${rel}`);
     } catch (e) {
-      fail(`selftest FAILED: ${rel} (\`node ${rel} --selftest\` exited non-zero)`);
+      fail(`selftest FAILED: ${rel} (\`${runner} ${rel} --selftest\` exited non-zero)`);
     }
   }
 }

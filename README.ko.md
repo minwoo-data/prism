@@ -290,6 +290,7 @@ codex --version   # >= 0.125.0
 
 ## 업데이트 기록
 
+- **2026-10-14 (0.4.0)** — Codex 호출 계약을 스크립트(`codex-run.sh`)로 옮김: 안전 문구·secret scrub·출력 계약·타임아웃·effort 고정을 모델 대신 코드가 지킨다. 런당 Codex 관련 지시문이 약 39 KB에서 2.7 KB로 줄었다.
 - **2026-10-13 (0.3.1)** — 0.3.0의 문서 거부를 되돌림: 설계 문서는 design 렌즈셋(구 classic, Code Review → Claim Accuracy)으로 리뷰해 `/ddaro:review` 연동을 복구. Codex 호출은 추론 강도 high·타임아웃 300초로 고정(`PRISM_CODEX_EFFORT`, `PRISM_CODEX_TIMEOUT`으로 변경).
 - **2026-10-13 (0.3.0)** — 코드 전용으로 정리, `prism-devil`을 `--redteam`으로 흡수, 보안 체크리스트 자동 로드, SKILL.md 다이어트(참조 파일 분리), target-first 프롬프트 순서, 파일 단위 Evidence 청킹. 상세는 CHANGELOG.
 - **2026-04-24** — 새 자매 skill `/prism-codex` (Codex 전용)과 `/prism-all` (dual-engine) 추가. Codex CLI 마이그레이션 writeup은 자매 triad 플러그인의 [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md). Codex 기반 variant 첫 사용 시 "model does not exist" 에러 만나면 먼저 읽어보세요.

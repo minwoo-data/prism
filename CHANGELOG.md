@@ -5,6 +5,74 @@ All notable changes to the Prism plugin are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-14
+
+The Codex invocation contract is now a script. prism-all and prism-codex call
+`codex-run.sh` once per angle instead of having the model re-type a bash template.
+
+### Why
+On 2026-10-13 a prism-all run on a design doc skipped the template: the orchestrator wrote its
+own runner that looped every angle in one Bash call, with no Sandbox Safety Preamble, no secret
+scrub, no effort pin and no `PRISM-FINDINGS v1` contract (so the parser could not read the
+output). The preamble and scrub exist because of the 2026-05-22 secret leak; prose was not enough
+to keep them.
+
+### Added
+- **`codex-run.sh`** (`skills/prism-all/`, byte-identical copy in `prism-codex/`):
+  - `init <slug> [--artifacts docs]` creates a private run dir (`mktemp -d`, umask 077, refuses a
+    base dir owned by someone else). `docs` is refused unless `docs/<skill>/` is gitignored.
+  - `discovery <run-dir> <angle> --target F... [--checklist F]` with the lens prompt on stdin.
+    The script prepends the preamble, embeds the target(s), adds the checklist for
+    `security`/`redteam` only, appends the output contract, applies the 180,000-byte guard,
+    runs Codex with a timeout (300 s) and pinned effort (`high`), scrubs the raw stream and the
+    last message, and runs `parse-findings.js`. Prints one summary line plus the parser JSON.
+  - `evidence <run-dir> <chunk-id>` for Codex Evidence-pass calls (same safety, no findings
+    contract, no parsing).
+  - `scrub <file>...` for reproduction logs (exit 3 when a file was sanitized).
+  - `--selftest`: 42 cases against a fake Codex. `verify-independence.js --strict` runs it.
+    Each protection was mutation-tested: removing it fails its case.
+- `.gitattributes` keeps `*.sh` at LF.
+
+### Changed (behavior the old template got wrong)
+- **Targets with secret-shaped test fixtures no longer quarantine every angle.** `codex exec`
+  echoes the prompt into its raw stream, so the old scrub flagged the target's own fixtures (found
+  when prism-all reviewed this script: all five angles came back scrubbed). A string is now allowed
+  back only if the prompt held it before Codex ran. That allow set lives in the wrapper's memory,
+  so a Codex that edits its prompt file cannot widen it, and a secret written into the prompt is
+  itself caught. A private-key header additionally needs its key body in the prompt.
+- **The raw stream is never parsed as the answer.** It echoes the prompt, so example findings in
+  the target (SKILL.md has some) would have been read as real ones. No last message → degraded.
+- The scrub runs before a failed call's stderr tail is quoted (the old template quoted it
+  unscrubbed), fails closed when a file cannot be scanned, and catches quoted assignments
+  (`PASSWORD="..."`, `"TOKEN": "..."`), AWS access key ids, `github_pat_` and `sk-` keys.
+- Codex runs as its own process group. Interrupting the wrapper (an outer Bash timeout) stops the
+  whole group, waits for it, then destroys partial output.
+- Timeout falls back to `gtimeout`, then to a portable watchdog (stock macOS); Windows
+  `timeout.exe` is ignored. `PRISM_CODEX_TIMEOUT=0` is rejected.
+- Every attempt works on private files (prompt, raw, message, json) and publishes them at the
+  end, so an overlapping retry of the same angle cannot swap content under the scan; a stale
+  parse from an earlier attempt is removed first.
+- Obvious credential files (`.env`, `*.pem`, `*.key`, `id_rsa`, `.npmrc`, ...) are refused as
+  targets. `--artifacts=docs` checks the real artifact names against `.gitignore` and refuses a
+  directory with tracked files.
+- New fallback markers: `timeout`, `no-last-message`, `interrupted`, `publish-failed`,
+  `prompt-build-failed`, `prompt-modified-during-run`.
+- `references/codex-invocation.md` keeps the reasoning (invariants with where each is enforced,
+  fallback markers and policy, operator rules, incident record) and drops the template and the
+  preamble copy. The preamble text now lives only in the script. The orchestrator reads this
+  file only when an angle degrades.
+- `PRISM_CODEX_MODEL` passes `-m` for the model fallback in Operator rules.
+
+### Not changed
+- Codex still runs with `--dangerously-bypass-approvals-and-sandbox`; the preamble and scrub
+  reduce, not remove, what a prompt-injected Codex can disclose (now stated in Operator rules).
+
+### Cost
+Codex-related orchestration text in a default prism-all run (5 Codex angles) drops from about
+39 KB to about 2.7 KB. Before: the 10 KB contract was read before the first call, and the
+preamble plus template (about 5.9 KB) was written out as model output once per angle. After:
+SKILL.md grows by about 1.7 KB and each call is about 0.2 KB plus the lens prompt.
+
 ## [0.3.1] - 2026-10-13
 
 Correction release. 0.3.0 made prism refuse documents and deprecated the classic lens set; that

@@ -9,8 +9,9 @@ user-invocable: true
 
 > 메인은 Claude (오케스트레이터). 5 discovery + Evidence pass는 **모두 Codex CLI** (gpt-5.5). 목적: Claude self-bias 회피 + Claude 토큰 절약. **합의는 우선순위, 확정은 코드 접지.**
 
-이 skill 디렉토리의 파일: `parse-findings.js`, `verify-evidence.js`(결정론 스크립트),
-`references/codex-invocation.md`(Codex 호출 계약 — preamble·템플릿·scrub·fallback·사건 기록),
+이 skill 디렉토리의 파일: `codex-run.sh`(Codex 호출 계약을 코드로 — preamble·stdin·가드·timeout·scrub·파싱),
+`parse-findings.js`, `verify-evidence.js`(결정론 스크립트),
+`references/codex-invocation.md`(왜 그런 계약인지 — 불변식·fallback 정책·사건 기록, 렌즈가 degraded일 때만 읽는다),
 `references/record-v2.md`(finding 스키마 + confidence 표), `references/redteam-lens.md`,
 `references/design-lenses.md`(문서용 design 렌즈셋). 참조 파일은 아래 단계가 지시할 때만 읽는다.
 
@@ -62,9 +63,18 @@ user-invocable: true
 
 ## Pass 1 — Codex 호출 (렌즈당 Bash 1개)
 
-**첫 Codex 호출 전에 `references/codex-invocation.md`를 읽고 그 템플릿을 그대로 쓴다** (Sandbox Safety Preamble prepend·tempfile+stdin·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message`·`parse-findings.js` 추출). 렌즈당 별도 Bash 호출(한 Bash 안에서 5개 순차 금지 — hang 시 뒷 렌즈 유실). Codex CLI는 한 번에 1콜이 안정적이므로 Bash들을 순차로 발사. Wall time ≈ 5 × (15~40s) = **~100~200s**.
+**Codex는 `codex-run.sh`로만 부른다** — 호출 템플릿을 손으로 쓰지 않는다. Sandbox Safety Preamble·tempfile+stdin·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message`·`[fallback: not-started]` 선생성·`parse-findings.js` 추출을 스크립트가 강제한다. 렌즈당 별도 Bash 호출(한 Bash 안에서 5개 순차 금지 — hang 시 뒷 렌즈 유실), Bash tool `timeout`은 330000 이상. Codex CLI는 한 번에 1콜이 안정적이므로 Bash들을 순차로 발사. Wall time ≈ 5 × (15~40s) = **~100~200s**.
 
-**프롬프트 조립 순서**: Preamble → ① target 전문(모든 렌즈 동일 → 공통 prefix) → ② 렌즈별 컨텍스트(Security/Red Team만 체크리스트) → ③ 렌즈 정의 + 출력 계약(마지막).
+```bash
+# 런당 1회, 출력된 경로를 이후 호출에 그대로 쓴다. --artifacts docs는 .gitignore에 없으면 거부된다.
+bash "<skill dir>/codex-run.sh" init <slug> [--artifacts docs]
+# 렌즈당 Bash 1개. heredoc에는 렌즈 정의만 — 출력 계약(PRISM-FINDINGS v1)은 스크립트가 붙인다.
+bash "<skill dir>/codex-run.sh" discovery <run-dir> <angle> --target <file> [--target <file>]... [--checklist <file>] <<'EOF'
+<렌즈 프롬프트>
+EOF
+```
+
+`<angle>`: `correctness|security|state|integration|testability|redteam|improvement` (design: `conflict|claim-accuracy|devil|robustness|improvement`). 스크립트의 조립 순서: Preamble → ① target 전문(모든 렌즈 동일 → 공통 prefix) → ② 체크리스트(`security`·`redteam`만, 다른 angle이면 버린다) → ③ 렌즈 정의 → ④ 출력 계약. stdout = 요약 1줄(`status=ok|degraded(<사유>)|secret-scrubbed findings=N`) + 파서 JSON. 실패한 렌즈도 exit 0 + `degraded:true`, exit 2는 인자 오류뿐. 사유별 처리는 `references/codex-invocation.md` §Fallback policy.
 
 공통 계약: **"너는 의심을 생산한다 — 확정은 Evidence pass의 일. LOCUS는 `file:lines@symbol`, `|` 금지."**
 
@@ -94,7 +104,7 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 
 ## Pass 2 — Codex Evidence pass (파일 단위 청킹 접지)
 
-후보를 우선순위(AGREEMENT → CRIT/HIGH → 나머지)로 정렬 후 **파일 단위로 ≤8건씩** 청킹(최우선 후보의 파일을 잡고 같은 파일 후보를 묶고 다음 파일로 — 한 청크가 한 파일을 한 번만 읽게). 각 콜에 candidate id를 실어 1:1 대응. 콜 실패/후보 누락 → **그 후보만** `SUSPECTED(missing: EVIDENCE_PASS_FAILED)`, 판정된 후보 재실행 금지, 라운드 fail 금지. Evidence 호출도 `codex-invocation.md` 템플릿(preamble·scrub)을 따른다.
+후보를 우선순위(AGREEMENT → CRIT/HIGH → 나머지)로 정렬 후 **파일 단위로 ≤8건씩** 청킹(최우선 후보의 파일을 잡고 같은 파일 후보를 묶고 다음 파일로 — 한 청크가 한 파일을 한 번만 읽게). 각 콜에 candidate id를 실어 1:1 대응. 콜 실패/후보 누락 → **그 후보만** `SUSPECTED(missing: EVIDENCE_PASS_FAILED)`, 판정된 후보 재실행 금지, 라운드 fail 금지. Evidence 콜: `bash "<skill dir>/codex-run.sh" evidence <run-dir> evidence-<n> [--target <file>]... <<'EOF'` + 아래 프롬프트·후보·record v2 계약 + `EOF` (preamble·timeout·scrub은 스크립트가 붙이고, 출력 계약은 붙이지 않는다).
 
 > 너는 **Evidence Agent**. 5 리뷰어가 같은 target을 분석해 아래 후보를 냈다. 각 후보를 실제 코드에 접지시키거나, 죽여라. 인용은 반드시 파일을 읽어 실제 존재하는 텍스트로(사후 기계 검증).
 > 1. 위치 고정: `file`, `lines`, `symbol`. 불가 → `SUSPECTED` + `missing`.
@@ -110,7 +120,7 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 
 `--adversarial`: REJECT 전 반대 주장 먼저 — 반박이 더 구체적·근거 우위일 때만 REJECT.
 
-`--reproduce`: prism 공통 규약 — 기계 검증 통과 SUPPORTED, CRIT/HIGH 우선 최대 5건, **stripped env·cwd=임시 디렉토리·프로젝트 트리 쓰기 금지·러너 설치 금지·실패 시그니처 사전 등록·per-test 60s·2회 연속 동일·운영자 confirm 1회**. 분류: REPRODUCED / NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT(setup/import 에러 포함) / TIMED_OUT / STATIC_EVIDENCE_ONLY / REQUIRES_EXTERNAL_SERVICE / REQUIRES_DOMAIN_CONFIRMATION. 자작 통과 테스트는 최대 SUSPECTED까지만 강등.
+`--reproduce`: prism 공통 규약 — 기계 검증 통과 SUPPORTED, CRIT/HIGH 우선 최대 5건, **stripped env·cwd=임시 디렉토리·프로젝트 트리 쓰기 금지·러너 설치 금지·실패 시그니처 사전 등록·per-test 60s·2회 연속 동일·운영자 confirm 1회·출력 로그에 `codex-run.sh scrub`(exit 3 = 치환됨)**. 분류: REPRODUCED / NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT(setup/import 에러 포함) / TIMED_OUT / STATIC_EVIDENCE_ONLY / REQUIRES_EXTERNAL_SERVICE / REQUIRES_DOMAIN_CONFIRMATION. 자작 통과 테스트는 최대 SUSPECTED까지만 강등.
 
 ---
 
@@ -168,6 +178,6 @@ node verify-independence.js --strict
 - ❌ **위치 없는 SUPPORTED / verify-evidence.js 건너뜀**
 - ❌ Evidence pass를 후보당 1콜로 — 파일 단위 ≤8 청킹
 - ❌ 재현 테스트를 프로젝트 트리에 / env 안 스트립 / 러너 설치
-- ❌ argv로 프롬프트 / SANDBOX SAFETY PREAMBLE 누락 / scrub 건너뜀 (`references/codex-invocation.md`)
+- ❌ `codex exec`를 직접 호출하거나 자체 실행 스크립트를 만듦 — preamble·scrub·출력 계약이 빠진다. Codex는 `codex-run.sh`로만
 - ❌ 문서의 글 품질(명확성·온보딩)을 prism에 기대함 — 그건 `/triad`. design 렌즈는 설계 건전성만 본다
 - ❌ 다른 plugin/skill 파일 런타임 참조
