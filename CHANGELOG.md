@@ -5,6 +5,55 @@ All notable changes to the Prism plugin are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-13
+
+Consolidation release. Prism becomes a **code-only** reviewer, absorbs `prism-devil`, and sheds
+roughly 40% of the per-invocation SKILL.md weight by moving reference material out of the hot path.
+
+### Added
+- **`--redteam`** — the retired `prism-devil` plugin lives on as an optional 6th discovery lens
+  (both engines in `/prism-all`). Hostile attacker-mindset probe over 10 prioritized attack
+  surfaces, strict severity rubric, `[chain:X]` tags for findings that compose. Unlike the old
+  plugin its findings go through the Evidence pass like everything else. Prompt in
+  `references/redteam-lens.md`.
+- **Project security checklist auto-load** — `docs/security-checklist.md` / `docs/security/checklist.md`
+  / `SECURITY.md` / `docs/SECURITY.md` (first hit) is handed to the Security and Red Team lenses
+  only; findings carry `[checklist:#N]` or `[not-in-checklist]`. Report gains **ATTACK CHAINS**
+  and **CHECKLIST COVERAGE** sections. Record v2 gains `checklist_ref` and `chain`.
+- **`references/` per skill** — `record-v2.md` (schema + confidence table), `redteam-lens.md`,
+  `classic-lenses.md`, and (Codex skills) `codex-invocation.md` holding the Sandbox Safety
+  Preamble, call template, scrub patterns, fallback table and the 2026-05-22 incident record.
+  `sync-review-parsers.sh` now syncs these too and `verify-independence.js` requires them.
+  prism-all/prism-codex previously pointed at "the `/prism` SKILL.md" for the record schema —
+  a soft cross-skill dependency; each skill now carries its own copy.
+
+### Changed
+- **Code only.** A markdown/design/plan target is refused with a pointer to `/triad` instead of
+  silently switching lens sets. The two parallel document-review paths (prism classic vs triad)
+  collapse into one.
+- **`--lenses=classic` deprecated** (removal in 0.4.0): no longer auto-selected for non-code,
+  explicit use prints a deprecation warning in the header. The classic lenses overlapped each
+  other and the defect set (Devil ⊂ Robustness + Security; Code Review overlapped everything).
+- **Prompt assembly order fixed: target first, lens last.** The target is identical across all
+  discovery agents, so it is now the shared prefix (prompt-cache friendly); lens-specific context
+  (checklist) and the lens definition come after. Applies to Claude agents and the Codex template.
+- **Evidence chunks are built by file.** Candidates are still prioritized (agreement → CRIT/HIGH →
+  rest) but each ≤8 chunk is filled from one file before moving on, so the Evidence Agent reads a
+  file once per chunk instead of once per candidate.
+- **Integration lens** now says so when caller context was not supplied instead of guessing
+  callers; `--diff` (the only mode that supplies real callers) is recommended for PR review.
+- **Cost section** documents where tokens go and the `context: fork` implication (invoking prism
+  at the end of a long session copies that session once before agents spawn — run early or in a
+  fresh session).
+- SKILL.md sizes: prism 418 → 296 lines, prism-all 464 → 238, prism-codex 351 → 173, with every
+  rule preserved (moved, not dropped).
+- README/README.ko: removed leftover 0.1 vocabulary (Verifier, CONFIRMED, Rejected Singletons),
+  fixed the "Evidence pass is one batched call" claim (it has been chunked since 0.2.1), pointed
+  the security row of the tool table at `--redteam`.
+
+### Removed
+- Companion-tool status for `prism-devil` (repo archived; `--redteam` supersedes it).
+
 ## [0.2.1] - 2026-07-14
 
 Hardening pass over 0.2.0, driven by a `/prism-all` meta-review of the redesign

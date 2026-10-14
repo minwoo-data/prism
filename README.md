@@ -12,6 +12,7 @@
 /prism --diff main...HEAD              -> review the CHANGE: what regression does this diff introduce?
 /prism <target> --quick                -> discovery only (everything reported as SUSPECTED)
 /prism <target> --adversarial          -> Evidence pass argues against its own REJECTs
+/prism <target> --redteam              -> + attacker-mindset Red Team lens (absorbed prism-devil)
 /prism <target> --include-improvements -> add the Improvement lens (labeled separately)
 /prism <target> --format json          -> machine-readable prism-report.json (finding records v2)
 ```
@@ -51,9 +52,9 @@ You ask Claude "review this file". It says "looks good". You ship it. Two weeks 
 |---|---|
 | Find defects broadly, evidence-graded | **prism** (this plugin) |
 | Cross-check with a second model (Claude + Codex) | `/prism-all` (ships in this plugin) |
-| Security / attacker-mindset deep probe | [prism-devil](https://github.com/minwoo-data/prism-devil) |
+| Security / attacker-mindset deep probe | `/prism <target> --redteam` (prism-devil was absorbed in 0.3.0) |
 | Actually fix a file, iteratively | [mangchi](https://github.com/minwoo-data/mangchi) |
-| Review markdown / designs / specs | [triad](https://github.com/minwoo-data/triad) |
+| Review markdown / designs / specs | [triad](https://github.com/minwoo-data/triad) — prism refuses document targets |
 | Parallel worktree sessions with safe merge | [ddaro](https://github.com/minwoo-data/ddaro) |
 
 ---
@@ -93,9 +94,9 @@ Installing `prism` gives you three independent skills that share the 5-angle fra
 
 | Skill | Engine | When to use |
 |---|---|---|
-| `/prism` | **Claude only** — 5 agents parallel + Verifier | Default. Fastest wall-time, no external CLI. |
-| `/prism-codex` | **Codex CLI only** — 5 sequential + Verifier, gpt-5.5 | Save Claude tokens, or get a different-model opinion. Requires `codex-cli >= 0.125.0`. |
-| `/prism-all` | **Claude + Codex in parallel** — 10 discovery + Verifier | Highest confidence. Same-angle cross-model agreement gets a dedicated Tier 1. `--verifier=claude\|codex\|both` picks the adjudicator. |
+| `/prism` | **Claude only** — 5 agents parallel + Evidence pass | Default. Fastest wall-time, no external CLI, only variant with `--diff`. |
+| `/prism-codex` | **Codex CLI only** — 5 calls + Codex Evidence pass, gpt-5.5 | Save Claude tokens, or get a different-model opinion. Requires `codex-cli >= 0.125.0`. |
+| `/prism-all` | **Claude + Codex in parallel** — 10 discovery + Evidence pass | Highest confidence. Same-angle cross-model agreement gets a dedicated Tier 1. `--verifier=claude\|codex\|both` picks the adjudicator. |
 
 All three ship inside one plugin install. Pick one per run. Codex CLI prerequisite details (including the "model does not exist" error which is actually a CLI version issue): see [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md) in the sibling triad plugin.
 
@@ -111,9 +112,13 @@ All three ship inside one plugin install. Pick one per run. Codex CLI prerequisi
 | **Integration & Regression** | Caller-contract breaks, schema/config drift, backward-compat hazards, hidden coupling |
 | **Testability & Observability** | Swallowed errors, silent fallbacks, lying logs, failure modes with no signal |
 
-The **Improvement** lens (refactors/features/UX) is opt-in via `--include-improvements` — it keeps
-defect reports quiet by default. `--lenses=classic` restores the original prism set
-(Conflict/Improvement/Devil/CodeReview/Robustness), auto-selected for non-code targets.
+Optional lenses: **Red Team** (`--redteam`) — the hostile attacker-mindset probe inherited from
+`prism-devil`, with project security-checklist cross-reference and attack-chain detection; its
+findings go through the same Evidence pass. **Improvement** (`--include-improvements`) — kept out
+of the default so defect reports stay quiet. `--lenses=classic` (the 0.1 set) is deprecated and
+explicit-only; **prism is code-only** — documents and plans are refused with a pointer to `/triad`.
+
+Prompts are assembled **target first, lens last**, so the shared prefix is prompt-cache friendly.
 
 Each lens runs in a **forked context** so agents can't see each other's output — agreement stays
 an independent signal, not an echo.
@@ -124,7 +129,7 @@ After discovery, every finding is a **candidate** — nothing is auto-confirmed:
 
 - **Agreement (2+ lenses)** sets priority and baseline confidence only. Same-model agreement is
   capped at MEDIUM confidence: five copies of the same model can share the same misunderstanding.
-- **Every candidate** goes through one batched **Evidence pass**: pin `file/lines/symbol`, trace
+- **Every candidate** goes through the **Evidence pass** (chunks of ≤8, built by file): pin `file/lines/symbol`, trace
   the execution path, quote the evidence line, check the precondition. Only then:
   `SUPPORTED` / `REJECTED` (with contradicting quote) / still `SUSPECTED` (with what's missing).
 - **`--reproduce`** takes SUPPORTED findings (CRIT/HIGH first, max 5) and writes a minimal failing
@@ -133,7 +138,7 @@ After discovery, every finding is a **candidate** — nothing is auto-confirmed:
 
 Every finding ships as a structured **record v2** — `id`, stable `fingerprint` (cross-run dedup),
 `file/lines/symbol`, `category`, `severity`, `status`, `claim`, `preconditions`, `execution_path`,
-`evidence`, `reproduction{status,suggested_test,command,result}`, `confidence`.
+`evidence`, `reproduction{status,suggested_test,command,result}`, `confidence`, plus `checklist_ref` and `chain` when a security checklist / Red Team lens is in play. Schema: `skills/prism/references/record-v2.md`.
 
 ## Features
 
@@ -141,8 +146,9 @@ Every finding ships as a structured **record v2** — `id`, stable `fingerprint`
 - **Evidence over agreement** — confirmation requires location + execution path + quote, never vote count.
 - **Reproduction sandbox** — failing tests demonstrate bugs without touching your project; "we didn't run it" is always stated (`STATIC_EVIDENCE_ONLY`, `REQUIRES_EXTERNAL_SERVICE`, ...).
 - **Change-scoped mode** — `--diff` reviews what a change breaks, not whether the codebase is nice.
-- **Batched Evidence pass** — one call covers all candidates; cost doesn't scale with finding count.
+- **Chunked Evidence pass** — ≤8 candidates per call, grouped by file so each file is read once per chunk; a failed chunk downgrades only its own candidates.
 - **Adversarial mode** — the Evidence pass argues against its own REJECTs before finalizing.
+- **Red Team lens** — `--redteam` adds a deliberately hostile 6th agent; findings are cross-referenced to your project's security checklist and composed into attack chains.
 - **Code never modified** — prism is a pure reviewer. Use `/mangchi` to actually change code.
 
 ---
@@ -150,19 +156,21 @@ Every finding ships as a structured **record v2** — `id`, stable `fingerprint`
 ## Modes and output
 
 ```
-/prism src/services/auth.py                 # default: 2-pass verify
-/prism src/services/auth.py --quick         # 1 pass only, no verify
-/prism src/services/auth.py --adversarial   # 1 pass + REJECT re-check
+/prism src/services/auth.py                 # default: discovery + Evidence pass
+/prism src/services/auth.py --quick         # discovery only (all SUSPECTED)
+/prism src/services/auth.py --adversarial   # Evidence pass argues against its own REJECTs
+/prism src/services/auth.py --redteam       # + attacker-mindset lens, checklist, attack chains
+/prism --diff main...HEAD                   # change-scoped review (preferred for PRs)
 /prism .                                    # whole-project review
 ```
 
-Natural language: *"full review"*, *"design review"*, *"prism 돌려"*.
+Natural language: *"full review"*, *"red team this"*, *"prism 돌려"*.
 
 Report shape:
 
 ```
 PRISM REPORT - src/auth.py - 2026-07-14 15:30
-Mode: verify +reproduce · Lenses: defect
+Mode: default +reproduce · Lenses: defect · Checklist: none
 Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
 ## REPRODUCED (demonstrated failures)
@@ -190,9 +198,13 @@ Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 |---|---|---|
 | `--quick` | 1.0× | Already-triaged targets (everything SUSPECTED) |
 | default | 1.3–1.5× | Standard reviews |
+| `--redteam` | +0.25× | Auth / payments / PII / untrusted-input parsers |
 | `--reproduce` | 1.6–2.2× | Before merging anything that matters |
 
-Evidence-pass cost is constant in the number of candidates (one batched call).
+Evidence-pass cost is ⌈candidates/8⌉ calls, chunked by file. Where tokens go and how to spend
+fewer: the target travels once per discovery agent (use `--diff` for PRs); prism runs in a forked
+context, so invoking it at the end of a long session copies that session once (run it early or in a
+fresh session); parsing and quote-checking are scripts, not model calls.
 
 ---
 
@@ -200,15 +212,15 @@ Evidence-pass cost is constant in the number of candidates (one batched call).
 
 ```
 /prism src/services/auth.py
-# → 5 agents in parallel (~20-40s depending on file size)
-# → Pass 1 result: 8 findings. 3 AGREEMENT (2+), 5 SINGLETON.
-# → Main: "Running verifier on 5 singletons..."
-# → Verifier (batched): 3 CONFIRMED, 1 REJECTED, 1 DEPENDS
-# → Final report: 6 actionable + 1 depends + 1 rejected (shown for transparency)
+# → 5 lenses in parallel (~20-40s depending on file size)
+# → Triage: 8 candidates. 3 flagged by 2+ lenses (priority), 5 singletons.
+# → Evidence pass (1 chunk of 8, grouped by file): 4 SUPPORTED, 2 REJECTED, 2 SUSPECTED
+# → verify-evidence.js: every SUPPORTED quote matched the cited lines
+# → Final report: 4 supported + 2 suspected (as questions) + 2 rejected (shown for transparency)
 
 # Stricter pass on a security review:
 /prism src/security/ --adversarial
-# → Same Pass 1. Verifier argues against its own REJECTs before finalizing.
+# → Same Pass 1. Evidence pass argues against its own REJECTs before finalizing.
 # → Catches "I was about to dismiss this but actually..." cases.
 
 # Whole-project sanity check:
@@ -230,7 +242,7 @@ Evidence-pass cost is constant in the number of candidates (one batched call).
 # → Claude 5 agents + Codex CLI 5 calls, all in parallel (~100-200s)
 # → Tier 1: same angle flagged by both engines → highest confidence
 # → Tier 2: one engine, multiple angles
-# → Tier 3: singletons (goes to Verifier)
+# → Tier 3: singletons — all three tiers go through the Evidence pass
 # → Requires codex-cli >= 0.125.0
 ```
 
@@ -270,8 +282,9 @@ Full writeup: sibling `triad/docs/codex-5.4-to-5.5.md` in this marketplace.
 
 ### Too many findings / report is noisy
 
-- Use `--quick` to skip verification (faster, more false positives).
-- Or use `/prism-devil` if you specifically want an attacker-mindset red-team pass instead of multi-angle breadth.
+- Use `--quick` to skip the Evidence pass (faster, more false positives).
+- Default reports exclude the Improvement lens already; if you added `--include-improvements`, drop it.
+- For a security-only pass, `--redteam` adds depth, not noise: its findings are evidence-checked like the rest.
 
 ---
 
@@ -288,9 +301,8 @@ The base `/prism` runs entirely within Claude Code. No external CLI required.
 ## When NOT to use prism
 
 - **Tiny one-line changes** — overkill
-- **Pure markdown/spec review** — use `/triad` (3 perspectives is enough)
 - **Iterative file hardening** — use `/mangchi` (better tool for that loop)
-- **Security-only deep probe** — `/prism-devil` is the attacker-mindset specialist
+- **Documents** — prism refuses them; `/triad` is the right tool (the deprecated `--lenses=classic` path goes away in 0.4)
 
 ## Philosophy
 

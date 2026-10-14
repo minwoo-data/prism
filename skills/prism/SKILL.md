@@ -1,7 +1,7 @@
 ---
 name: prism
-description: Evidence-graded multi-angle review — 5 defect-focused lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path before anything is confirmed. Statuses SUSPECTED → SUPPORTED → REPRODUCED. Agreement is a prioritization signal, not a verdict. Use when user says "prism", "prism 돌려", "prism <file>", "full review", or before major decisions.
-argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--diff [range]] [--include-improvements] [--lenses=classic] [--format json]"
+description: Evidence-graded multi-angle code review — 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path before anything is confirmed. Statuses SUSPECTED → SUPPORTED → REPRODUCED. Agreement is a prioritization signal, not a verdict. --redteam adds an attacker-mindset lens (absorbed prism-devil). Code only; documents go to /triad. Use when user says "prism", "prism 돌려", "prism <file>", "full review", "red team", "what could break".
+argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--include-improvements] [--format json]"
 context: fork
 user-invocable: true
 ---
@@ -13,9 +13,11 @@ user-invocable: true
 > and, when possible, **reproduced it with a failing test**. Agreement decides what gets
 > investigated first; evidence decides what survives.
 
-## The evidence ladder
+Files in this skill dir: `parse-findings.js`, `verify-evidence.js` (deterministic, load-bearing),
+`references/record-v2.md` (finding schema + confidence table), `references/redteam-lens.md`,
+`references/classic-lenses.md` (deprecated). Read a reference only when the step below says so.
 
-Every finding carries exactly one status:
+## The evidence ladder
 
 | Status | Meaning | Requirements |
 |---|---|---|
@@ -24,322 +26,189 @@ Every finding carries exactly one status:
 | `REPRODUCED` | Failure demonstrated | SUPPORTED + a failing test/command actually run |
 | `REJECTED` | Contradicted or unfounded | the contradicting evidence, stated |
 
-Rules that follow from the ladder:
-
-- **Agreement ≠ confirmation.** 2+ lenses agreeing makes a finding a *priority candidate*,
-  never a confirmed defect. All prism lenses run on the same model, and same-model agents
-  can share the same misunderstanding.
-- A finding that cannot be pinned to a location stays `SUSPECTED`, and the report says
-  *why* (missing context, needs domain confirmation, target not in scope).
-- Only `REPRODUCED` may claim certainty language in the report ("does happen"). `SUPPORTED`
-  uses "the code path allows"; `SUSPECTED` uses "may".
+- **Agreement ≠ confirmation.** 2+ lenses agreeing makes a finding a *priority candidate*, never
+  a confirmed defect. All prism lenses run on the same model and can share a misunderstanding.
+- A finding that cannot be pinned stays `SUSPECTED`, and the report says *why*.
+- Certainty language is gated by status (see `references/record-v2.md`).
 
 ## Modes
 
 | Invocation | Behavior |
 |---|---|
 | `/prism <target>` | **Default: Discovery → Evidence pass.** All candidates get evidence-checked. |
-| `/prism <target> --quick` | Discovery only. Everything reported as `SUSPECTED`. Speed > signal. |
-| `/prism <target> --adversarial` | Evidence pass must argue *against* its own REJECTs before finalizing. |
-| `/prism <target> --reproduce` | + Reproduction pass: minimal failing tests in a temp dir (never the project). |
-| `/prism --diff [base...head]` | Review **the change**, not the file: "what regression does this diff introduce?" |
-| `/prism <target> --include-improvements` | Adds the Improvement lens (suggestions labeled separately, excluded from defect counts). |
-| `/prism <target> --lenses=classic` | Legacy lens set (Conflict/Improvement/Devil/CodeReview/Robustness). Auto-selected for non-code targets (design docs, plans). |
-| `/prism <target> --format json` | Also emit machine-readable `prism-report.json` (finding records v2). |
+| `--quick` | Discovery only. Everything reported as `SUSPECTED`. |
+| `--adversarial` | Evidence pass must argue *against* its own REJECTs before finalizing. |
+| `--reproduce` | + Reproduction pass: minimal failing tests in a temp dir (never the project). |
+| `--redteam` | + 6th discovery agent: hostile attacker-mindset probe (`references/redteam-lens.md`). Adds ATTACK CHAINS and CHECKLIST COVERAGE to the report. |
+| `--diff [base...head]` | Review **the change**, not the file. |
+| `--include-improvements` | Adds the Improvement lens (labeled separately, excluded from defect counts). |
+| `--format json` | Also emit `prism-report.json` (finding records v2). |
+| `--lenses=classic` | **Deprecated (removal in 0.4).** Original 0.1 lens set, explicit only. Prints a warning. |
 
 ## Target resolution
 
-- File path → review that file. Topic → locate and review relevant files. No argument → current project design/quality.
-- **Always read the full target content first** and pass it verbatim to each agent. No summarization.
-- Target type detection (decides the lens set + auto-choice): **code** if the majority of target
-  bytes are source files (or, in `--diff` mode, if any hunk touches a code file); **non-code**
-  (markdown/design/plans) otherwise → auto `--lenses=classic`. The header prints `Lenses: defect
-  (auto)` / `classic (auto)` / `... (explicit)` so a silent flip between runs is visible. For
-  non-code the evidence pass still runs but "evidence" = quoting the contradicting/verifying
-  passage, capped at MEDIUM confidence (§Confidence).
+- File path → review that file. Topic → locate and review relevant files. No argument → current
+  project. **Always read the full target first** and pass it verbatim to each agent. No summarization.
+- **Prism reviews code.** If the majority of target bytes are markdown/design/plan text (or, in
+  `--diff` mode, no hunk touches a code file), **stop** and print:
+  `prism is a code reviewer — for documents, plans and specs run /triad <file>.`
+  Only an explicit `--lenses=classic` overrides this (deprecated path, header shows `Lenses: classic (deprecated)`).
+- **Project security checklist**: before Pass 1, look for `docs/security-checklist.md` →
+  `docs/security/checklist.md` → `SECURITY.md` → `docs/SECURITY.md` (first hit, ≤3 tool calls).
+  If found, it is handed to the **Security** lens (and the Red Team lens under `--redteam`) only.
 
 ### `--diff` mode (change-scoped review)
 
-Target = the diff, not the codebase. Range selection rule: dirty worktree → staged+unstaged vs
-`HEAD`; clean worktree → `merge-base main...HEAD` (explicit `<range>` overrides). Collect and hand
-each lens:
-
-1. Changed hunks (`git diff <range>`)
-2. Pre-change code for each hunk (`git show <base>:<file>` excerpt)
-3. Enclosing function/class of each hunk + **up to ~5 direct callers/callees** (grep the symbol;
-   cap the context against the prompt-size guard so runs are comparable)
-4. Tests referencing the changed symbols
-5. Schema/config/migration files touched
-6. PR description if available (`gh pr view --json title,body`)
-
-Frame every lens with: **"What regression risk does *this change* newly introduce?"** — not "is this codebase good". Findings must reference a hunk. Pre-existing issues in unchanged code are reported only under a separate `PRE-EXISTING (out of scope)` note, max 3 lines. (`--diff` is `/prism` only; for cross-model diff review run `/prism-all` on the same collected context.)
+Range: dirty worktree → staged+unstaged vs `HEAD`; clean → `merge-base main...HEAD` (explicit
+`<range>` overrides). Collect and hand each lens: (1) changed hunks, (2) pre-change code per hunk
+(`git show <base>:<file>`), (3) enclosing function/class + **up to ~5 direct callers/callees**
+(capped against the prompt-size guard), (4) tests referencing changed symbols, (5) touched
+schema/config/migration files, (6) PR description (`gh pr view --json title,body`).
+Frame every lens with **"What regression risk does *this change* newly introduce?"** Findings must
+reference a hunk; pre-existing issues go under `PRE-EXISTING (out of scope)`, max 3 lines.
+(`--diff` is `/prism` only; for cross-model diff review run `/prism-all` on the collected context.)
+**Prefer `--diff` for PR review** — it sends hunks + context instead of whole files five times, and
+it is the only mode where the Integration lens sees real callers instead of guessing them.
 
 ---
 
-## Lens sets
-
-### DEFECT set (default for code)
-
-Five lenses tuned to find **defects**, not opinions:
+## Lenses (DEFECT set — the default)
 
 1. **Correctness & Contracts** — wrong results, boundary values, error/exception paths, violated invariants, API contract breaks (return shapes, nullability, units, encoding).
-2. **Security & Trust Boundaries** — input validation, authn/authz, secrets handling, injection, data crossing trust boundaries, unsafe defaults.
-3. **State, Concurrency & Recovery** — races, double-submit, lost update, TOCTOU; crash/timeout mid-flight, idempotency, retry safety, rollback, orphaned state; state machine holes (forbidden/stuck/re-entry transitions).
+2. **Security & Trust Boundaries** — input validation, authn/authz, secrets handling, injection, data crossing trust boundaries, unsafe defaults. Receives the project checklist when one exists.
+3. **State, Concurrency & Recovery** — races, double-submit, lost update, TOCTOU; crash/timeout mid-flight, idempotency, retry safety, rollback, orphaned state; state-machine holes.
 4. **Integration & Regression** — caller/callee impact, schema/config drift, backward compatibility, hidden coupling, "works alone, breaks together".
 5. **Testability & Observability** — can this failure be caught? missing test seams, swallowed errors, logs that lie, silent fallbacks, unmonitorable failure modes.
 
-The **Improvement** lens (refactors, features, UX ideas) is *not* in the default set — it makes
-defect reports noisy. `--include-improvements` adds it as a 6th agent; its findings are labeled
-`category: improvement` and excluded from defect counts and the action order.
-
-### CLASSIC set (`--lenses=classic`, auto for non-code)
-
-Conflict Detection / Improvement / Devil's Advocate / Code Review / Robustness (4-axis) — the
-original prism lenses, better suited to designs, plans, and documents.
+Optional: **Red Team** (`--redteam`, prompt in `references/redteam-lens.md`); **Improvement**
+(`--include-improvements`, `category: improvement`, excluded from defect counts and action order).
 
 ---
 
-## Pass 1 — Parallel discovery (5 agents)
+## Pass 1 — Parallel discovery
 
-Launch all agents in a **single message** with multiple Agent tool calls, forked context.
-Each agent gets: the lens definition below, the full target, and this output contract:
+Launch all agents in a **single message** with multiple Agent tool calls (forked context, so
+agents cannot see each other). **Assemble every agent prompt in this order:**
 
-> After your reasoning, emit exactly one fenced block. One line per finding:
+1. **Target content** (verbatim; in `--diff` mode the collected diff context) — identical across
+   agents, so the shared prefix is prompt-cache friendly.
+2. **Lens-specific context** — only Security/Red Team get the project checklist.
+3. **Lens definition** (below) and the **output contract** (last).
+
+Output contract (every lens):
+
+> After your reasoning, emit exactly one fenced block, as the **last** fence in the message:
 > ```
 > <<<PRISM-FINDINGS v1>>>
 > SEV | file:lines@symbol | claim -> suggested fix
 > <<<END>>>
 > ```
-> SEV ∈ CRIT|HIGH|MED|LOW. LOCUS must be as precise as you can make it — `file:lines@symbol`
-> when you can pin it, a section name when you cannot. **LOCUS must not contain `|`** (replace any
-> pipe with `/`); the parser splits on the first two pipes and treats the last `->` as the fix
-> boundary. Emit your real block as the **last** fence in the message. Empty block = this lens is
-> clean. Do not confirm anything: you produce *suspicions*; the evidence pass does the confirming.
+> SEV ∈ CRIT|HIGH|MED|LOW (canonical tokens only). LOCUS as precise as you can (`file:lines@symbol`;
+> a section name only when you cannot pin it) and **must not contain `|`** (replace with `/`): the
+> parser splits on the first two pipes and treats the last `->` as the fix boundary. Empty block =
+> this lens is clean. You produce *suspicions*; the Evidence pass does the confirming.
 
-Lens prompts (DEFECT set — default for code):
+Lens prompts:
 
 - **Correctness & Contracts**: "Find places where this code produces wrong results or violates its stated/implied contract. Check boundaries (empty/zero/max/unicode), error paths, invariants, return-shape and nullability promises, unit/encoding mismatches. Concrete inputs → wrong output beats abstract concern."
-- **Security & Trust Boundaries**: "Find defects where untrusted data or callers can cause harm: missing validation, authz gaps, injection, secret exposure, unsafe defaults, trust-boundary crossings. State the attacker precondition for each."
+- **Security & Trust Boundaries**: "Find defects where untrusted data or callers can cause harm: missing validation, authz gaps, injection, secret exposure, unsafe defaults, trust-boundary crossings. State the attacker precondition for each. If a project security checklist is provided, tag each finding with the matching item (`[checklist:#N]`) or `[not-in-checklist]`."
 - **State, Concurrency & Recovery**: "Two callers at once; a crash halfway; a retry after timeout. Find races, lost updates, TOCTOU, non-idempotent retries, orphaned/stuck states, forbidden state transitions. For each: the interleaving or failure sequence that triggers it."
-- **Integration & Regression**: "Who calls this, what does it call, what breaks together? Find caller-contract breaks, schema/config drift, backward-compat hazards, hidden coupling. Name the affected caller/consumer for each."
+- **Integration & Regression**: "Who calls this, what does it call, what breaks together? Find caller-contract breaks, schema/config drift, backward-compat hazards, hidden coupling. Name the affected caller/consumer for each. If caller context was not provided, say so instead of guessing."
 - **Testability & Observability**: "When this fails in production, will anyone know? Find swallowed exceptions, silent fallbacks, misleading logs, untestable seams, failure modes with no signal. For each: how the failure would (not) surface."
-
-CLASSIC set (`--lenses=classic`, auto for non-code targets). Category mapping into record v2 is in
-the schema comment.
-
-- **Conflict Detection**: "Find conflicts, contradictions, and integration risks: overlaps with existing code/skills, config contradictions, tool-chain conflicts, edge cases where components disagree."
-- **Improvement**: "Suggest concrete enhancements. For each: current state → proposed improvement → rationale. Focus on logic/efficiency/UX gains, missing features, integration opportunities."
-- **Devil's Advocate**: "Find weaknesses, failure modes, and reasons this might not work: self-evaluation bias, gaming/Goodhart risk, practical failure modes, cost/time, false confidence, scope creep, regression risk. Give each a mitigation."
-- **Code Review**: "Review for clarity, completeness, correctness, consistency: ambiguous instructions, missing edge cases, pattern consistency, actionability of each step."
-- **Robustness (4-Axis)**: "Evaluate 4 orthogonal failure axes with concrete scenarios (N/A if none): (1) Concurrency — races, double-submit, lost update, TOCTOU; (2) Failure & Recovery — mid-flight crash/timeout, idempotency, retry safety, rollback, orphaned state; (3) Data Integrity — FK cascade direction, unique/CHECK constraints, upsert vs replace, schema mismatch; (4) State Transitions — every reachable state, forbidden/terminal/re-entry."
-
-Severity tokens in every lens must be the fence set `CRIT|HIGH|MED|LOW` (not CRITICAL/MEDIUM — the
-parser normalizes aliases but emit the canonical tokens to be safe).
+- **Red Team** (`--redteam`): full prompt in `references/redteam-lens.md`.
+- **Improvement** (`--include-improvements`): "Suggest concrete enhancements. For each: current state → proposed improvement → rationale."
+- Classic set (`--lenses=classic`, deprecated): `references/classic-lenses.md`.
 
 ---
 
 ## Triage — candidates, not verdicts
 
-Write each agent's returned block to a file and extract deterministically — the same code-not-
-eyeballing rule the dual-engine skills use:
+Write each agent's block to a file and extract deterministically:
 ```
 node "<this skill dir>/parse-findings.js" "<agent-out>" "<lens>" > "<agent-out>.json"
 ```
-Then group semantically overlapping findings:
+Then group semantically overlapping findings.
 
-- **model_agreement** = how many lenses flagged it (e.g. `3/5`). Record it; it is a
-  *prioritization* signal only. A parser `degraded:true` record is infra, not a candidate — route
-  it to a "DEGRADED LENSES" note, exclude from candidate counts and fingerprinting.
-- Order the candidate list: agreements first (highest N first), then singletons by severity.
-- `--quick` → stop here. Report everything as `SUSPECTED`, labeled by lens + agreement count.
-
-There is **no auto-confirm path**. The old rule "2+ agents → CONFIRMED" is retired: same-model
-agreement caps confidence at MEDIUM (see Confidence below) until evidence raises it.
+- **model_agreement** = how many lenses flagged it (`3/5`). Prioritization signal only.
+- A parser `degraded:true` record is infra, not a candidate → "DEGRADED LENSES" note, excluded
+  from counts and fingerprinting.
+- Order: agreements first (highest N), then singletons by severity.
+- `--quick` → stop here; report everything as `SUSPECTED` with lens + agreement count.
+- There is **no auto-confirm path**; same-model agreement caps confidence at MEDIUM.
 
 ---
 
 ## Pass 2 — Evidence & verification (default)
 
-The **Evidence Agent** (spawned via the Agent tool with Read/Grep/Glob + the repo root, *not* a
-re-paste of the target) grounds candidates in **chunks of ≤8** (agreements first, then CRIT/HIGH),
-one batched call per chunk. It reads the actual files to quote them.
+The **Evidence Agent** (Agent tool with Read/Grep/Glob + the repo root — *not* a re-paste of the
+target) grounds candidates in **chunks of ≤8**, one batched call per chunk.
 
-> You are an **Evidence Agent**. Reviewers produced the candidate findings below. For each one,
-> your job is to *ground it in the actual code* — or kill it. Never take a reviewer's word.
+**Chunking rule:** sort candidates by priority (agreements → CRIT/HIGH → rest), then build each
+chunk **by file**: take the highest-priority unassigned candidate, pull every other unassigned
+candidate from the same file (up to 8), then continue with the next file. One file is read once per
+chunk instead of once per candidate. If a chunk fails or omits a candidate, **that candidate alone**
+becomes `SUSPECTED (missing: EVIDENCE_PASS_FAILED)`; never re-verdict, never fail the run. A single
+30-candidate call skims and rubber-stamps — the exact failure this pass exists to prevent.
+
+Evidence Agent prompt:
+
+> You are an **Evidence Agent**. Reviewers produced the candidate findings below. Ground each one
+> in the actual code — or kill it. Never take a reviewer's word; **read the file for every quote**
+> (quotes are machine-checked afterward; a fabricated one is downgraded).
 >
-> For each candidate, do this in order:
-> 1. **Pin the location**: exact `file`, `lines`, `symbol`. If you cannot locate it, the finding
->    stays `SUSPECTED` — record what was missing.
-> 2. **Trace the execution path**: the ordered call/branch steps from entry to defect
->    (e.g. `reset_password() → token lookup → password update → token not invalidated`).
-> 3. **Quote the evidence**: the line(s) that make the claim true, cited as `file:line — quote`.
-> 4. **Check the precondition**: what must an attacker/caller/state satisfy? If the precondition
->    is impossible in this codebase, that is a `REJECTED` with the contradicting evidence.
-> 5. **Verdict**: `SUPPORTED` (1–3 all present) / `REJECTED` (contradicting evidence, quote it) /
->    `SUSPECTED` (cannot pin or needs domain knowledge — name the missing context, e.g.
->    `REQUIRES_DOMAIN_CONFIRMATION: is reuse of reset tokens within 5min acceptable?`).
-> 5b. Location pinned but path or quote incomplete → `SUSPECTED` with `evidence_strength: WEAK`
->    and a `missing:` note (do not grant SUPPORTED on a partial pin).
-> 6. You may adjust severity with one sentence of justification. Do NOT invent new findings.
-> 7. For each `SUPPORTED` finding, name a `suggested_test` (test function name + one-line scenario)
->    even if reproduction is not requested — it makes the finding actionable.
-> 8. Read the actual file for every quote — do NOT trust the reviewer's wording. Quotes are
->    machine-checked afterward; a fabricated one is downgraded, so quoting real lines is the only
->    way a finding survives as SUPPORTED.
+> 1. **Pin the location**: exact `file`, `lines`, `symbol`. Cannot locate → stays `SUSPECTED`, record what was missing.
+> 2. **Trace the execution path**: ordered call/branch steps from entry to defect.
+> 3. **Quote the evidence**: the line(s) that make the claim true, as `file:line — quote`.
+> 4. **Check the precondition**: if impossible in this codebase → `REJECTED` with the contradicting quote.
+> 5. **Verdict**: `SUPPORTED` (1–3 all present) / `REJECTED` / `SUSPECTED` (cannot pin or needs domain knowledge — name it, e.g. `REQUIRES_DOMAIN_CONFIRMATION: <question>`). Location pinned but path/quote incomplete → `SUSPECTED` + `evidence_strength: WEAK` + `missing:`.
+> 6. You may adjust severity with one sentence. Do NOT invent new findings.
+> 7. For each `SUPPORTED`: name a `suggested_test` (function name + one-line scenario).
+> 8. If two or more candidates compose into a worse outcome, give them the same `chain` id.
 >
-> Output one finding record v2 (schema below) per candidate, each as one JSON object on its own
-> line inside a single fence:
+> Emit one finding record v2 per candidate, one JSON object per line, inside a single fence:
 > ```
 > <<<PRISM-RECORDS v2>>>
 > {"id":"PRISM-001","candidate_id":"c1","file":"src/auth.py","lines":"84-102",...}
 > <<<END>>>
 > ```
-> Agreement count is given; you fill `evidence_strength`: NONE (nothing pinned) / WEAK (location
-> only) / MEDIUM (location + execution path + quote) / STRONG (reproduced — only Pass 3 sets it).
+> Schema: `references/record-v2.md`. You fill `evidence_strength`: NONE / WEAK / MEDIUM (STRONG is set only by Pass 3).
 
-**Batching (no unbounded single call):** ground candidates in chunks of **≤8**, agreements first,
-then CRIT/HIGH, then the rest — one batched call per chunk. If a chunk call fails or omits a
-candidate, that candidate alone is reported `SUSPECTED (missing: EVIDENCE_PASS_FAILED)`; never
-re-verdict a candidate already decided, never fail the whole run. A single 30-candidate call
-skims and rubber-stamps — the exact failure the evidence pass exists to prevent.
-
-**Machine check (invariant — stops the model grading its own homework):** parse the v2 records to
-JSON, then run
+**Machine check (invariant):** parse the v2 records to JSON, then
 ```
 node "<this skill dir>/verify-evidence.js" records.json "<repo-root>" > checked.json
 ```
-It (1) greps every `SUPPORTED`/`REPRODUCED` quote against the cited file+lines and auto-downgrades
-non-matches to `SUSPECTED (EVIDENCE_QUOTE_MISMATCH)`, and (2) computes `fingerprint` in code (an
-LLM cannot compute sha1). **`checked.json` is the source of truth** — an unverified quote must not
-ship as SUPPORTED. Self-check: `node verify-evidence.js --selftest`.
+It greps every `SUPPORTED`/`REPRODUCED` quote against the cited file+lines (mismatch →
+`SUSPECTED (EVIDENCE_QUOTE_MISMATCH)`) and computes `fingerprint`. **`checked.json` is the source
+of truth.** Self-check: `node verify-evidence.js --selftest`.
 
-### Adversarial mode (`--adversarial`)
-
-Before finalizing any `REJECTED`, the Evidence Agent must argue the reviewer's side: "what if
-they're right and I'm missing context?" Only reject if the counter-argument is more specific and
-better-sourced than the original claim.
+**`--adversarial`:** before finalizing any `REJECTED`, argue the reviewer's side; reject only if the
+counter-argument is more specific and better-sourced than the claim.
 
 ---
 
 ## Pass 3 — Reproduction (`--reproduce`)
 
-Prism stays a **pure reviewer**: the project is never modified. Reproduction happens in a
-throwaway sandbox.
+Prism stays a **pure reviewer**: the project is never modified. Actor: the main agent (or a
+Reproduction Agent with Bash) — the Evidence Agent never executes code. Selection: machine-verified
+`SUPPORTED` only, CRIT/HIGH first, **max 5 per run** (report how many were skipped and why).
 
-Actor: the **main agent (or a dedicated Reproduction Agent with Bash)** runs this — the Evidence
-Agent never executes code. Selection: machine-verified `SUPPORTED` only, CRIT/HIGH first,
-**max 5 per run** (report how many were skipped and why).
+> ⚠️ **"Temp dir" is a write guard, not an execution sandbox.** Importing the target runs its
+> module-level side effects with the operator's environment. Every reproduction command MUST run
+> with a **stripped env** (`env -i` + allowlist: PATH, language runtime, `HOME` if required),
+> **cwd = the temp dir**, **no network** where the runner supports it, **install nothing** (runners
+> already on PATH only), ask the operator to **confirm once** before the first execution, and pass
+> output through a secret scrub before it enters the report.
 
-> ⚠️ **"Temp dir" is a write guard, not an execution sandbox.** Importing/running the target
-> executes its module-level side effects **with the operator's full environment** — the same env
-> whose secrets a prior incident leaked. Every reproduction command MUST: run with a **stripped
-> env** (`env -i` + an allowlist: PATH, language runtime, `HOME` if required); **cwd = the temp
-> dir**; **no network** where the runner supports disabling it; **install nothing anywhere** (only
-> runners already on PATH); ask the operator to **confirm once** before the first execution this
-> run; and pass output through the §Codex invariant-7 secret-scrub before it enters the report.
+1. **Search existing tests first** — run isolated, compare against a baseline run.
+2. Detect a runner **already on PATH** (pytest / vitest / jest / `node --test` / go test / cargo test). None → `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT`.
+3. Write a **minimal failing test** in `${TMPDIR:-${TEMP:-/tmp}}/prism-tests/` (prefer `mktemp -d`), importing the target by path. Never inside the project tree.
+4. **Pre-register the expected failure signature** in the record before running.
+5. Run with a **per-test 60s timeout** (5 min total); record exit code, duration, verbatim tail. Require **2 consecutive identical outcomes**.
+6. Classify `reproduction.status`: `REPRODUCED` (signature match, twice) / `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT` (incl. any setup/import/fixture error — a non-matching red is NOT a reproduction) / `TIMED_OUT` (never auto-upgrades) / `STATIC_EVIDENCE_ONLY` / `REQUIRES_EXTERNAL_SERVICE` / `REQUIRES_DOMAIN_CONFIRMATION`.
+7. **Self-written test passes** → downgrade **at most to `SUSPECTED`**, only if it exercised the claimed preconditions+path; otherwise keep `SUPPORTED` with `NOT_REPRODUCED_BY_ATTEMPT`. Quote the passing run either way.
+8. Clean up the temp dir (preserve sanitized markers on a scrub event); keep the test source in the report and JSON.
 
-Per finding:
-
-1. **Search existing tests first** — an existing test covering the path may prove or disprove the
-   claim without writing anything (run it *isolated*, and compare against a baseline run so an
-   unrelated failing suite doesn't bias the verdict).
-2. Detect a test runner **already on PATH** (pytest / vitest / jest / `node --test` / go test /
-   cargo test). None on PATH → `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT` (do **not** install one).
-3. Write a **minimal failing test** in `${TMPDIR:-${TEMP:-/tmp}}/prism-tests/` (prefer `mktemp -d`),
-   importing the target by path. Never write inside the project tree.
-4. **Pre-register the expected failure signature** (exception type / assertion message) in the
-   record *before* running — only a failure matching it counts as REPRODUCED.
-5. Run with a **per-test 60s timeout** (5min total). Record exit code, duration, and the verbatim
-   stdout/stderr tail. Require **2 consecutive identical outcomes** (flake guard).
-6. Classify:
-
-| reproduction.status | Meaning |
-|---|---|
-| `REPRODUCED` | Failure **matching the pre-registered signature**, twice → finding becomes `REPRODUCED` |
-| `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT` | Runner/deps/fixtures unavailable, **or a setup/import/fixture error** (a non-matching red is NOT a reproduction) |
-| `TIMED_OUT` | Ran past the timeout (for a concurrency bug a hang may *be* the reproduction) — never auto-upgrades; recorded for the operator |
-| `STATIC_EVIDENCE_ONLY` | Not attempted (cap, or inherently static claim) |
-| `REQUIRES_EXTERNAL_SERVICE` | Needs a DB/API/queue this sandbox doesn't have |
-| `REQUIRES_DOMAIN_CONFIRMATION` | Only a human can say whether this behavior is wrong |
-
-7. **If the self-written test passes**: downgrade **at most to `SUSPECTED`** (a self-written passing
-   test is not the "contradicting evidence" a `REJECTED` requires), and only if it actually
-   exercises the claimed preconditions+path; otherwise keep `SUPPORTED` with
-   `reproduction.status: NOT_REPRODUCED_BY_ATTEMPT`. Quote the passing run either way.
-8. Clean up the temp dir (except on a scrub event — then preserve the sanitized markers durably and
-   tell the operator); keep the test source **in the report and JSON** for promotion.
-
-Never hide that reproduction didn't run: every record carries `reproduction.status`, and
-`STATIC_EVIDENCE_ONLY` / `NOT_RUN` are honest, common values.
-
----
-
-## Finding record v2 (required for every reported finding)
-
-```yaml
-id: PRISM-001                    # run-scoped, sequential; NOT stable across runs (use fingerprint for that)
-candidate_id: c1                 # links back to the discovery candidate for batch reconciliation
-fingerprint: a3f92c1e0b71        # sha1(normPath|symbol|category|claim-slug)[:12] — computed by verify-evidence.js, NOT the model
-unpinned: false                  # true when file:null → excluded from cross-run dedup
-file: src/auth.py                # null allowed only for SUSPECTED
-lines: 84-102
-symbol: reset_password
-category: security               # correctness|security|state|integration|testability|improvement
-                                 # classic lenses map: conflict→integration, devil→correctness,
-                                 # code-review→correctness, robustness→state, improvement→improvement
-severity: HIGH
-status: SUPPORTED                # SUSPECTED|SUPPORTED|REPRODUCED|REJECTED
-missing: null                    # required string when SUSPECTED (what blocked grounding)
-degraded: false                  # true only for infra markers (never a real finding)
-
-claim: "Reset token can be reused"
-preconditions:
-  - "Attacker has a previously used reset token"
-execution_path:
-  - reset_password() → token lookup → password update → token not invalidated
-evidence:
-  - "src/auth.py:98 — token record remains active after successful update"
-suggested_fix: "invalidate the token row inside the update transaction"   # carried from the v1 line
-
-reproduction:
-  status: NOT_RUN                # NOT_RUN|REPRODUCED|NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT|TIMED_OUT|STATIC_EVIDENCE_ONLY|REQUIRES_EXTERNAL_SERVICE|REQUIRES_DOMAIN_CONFIRMATION|NOT_REPRODUCED_BY_ATTEMPT
-  suggested_test: test_reset_token_cannot_be_reused
-  expected_signature: null       # pre-registered failure (exception/assertion) before running
-  command: null                  # exact command when run
-  result: null                   # verbatim tail when run
-
-confidence:
-  model_agreement: "3/5"         # /prism: n/5. /prism-all uses agreement:{claude,codex,cross_model} instead
-  evidence_strength: MEDIUM      # NONE|WEAK|MEDIUM|STRONG  (finalized by verify-evidence.js)
-  label: HIGH                    # closed enum below
-```
-
-Field rules: `file/lines/symbol` are **required** for `SUPPORTED`+ (no location → cannot be
-SUPPORTED). `evidence` requires ≥1 quoted line for SUPPORTED, and each quote must actually appear
-at the cited lines (verify-evidence.js enforces this). `SUSPECTED` may have `file: null` but must
-carry `missing:`. `reproduction.status` = `NOT_RUN` in default/`--quick` mode; the other values
-only appear under `--reproduce`. `--quick` emits degenerate records (status SUSPECTED,
-evidence_strength NONE, reproduction NOT_RUN, fingerprint null).
-
-## Confidence (closed enum, computable from stored fields)
-
-`confidence = model_agreement × evidence_strength`, minus honesty penalties. Label enum:
-`{LOW, MEDIUM, MEDIUM-HIGH, HIGH, HIGH+, VERY-HIGH}`.
-
-| model_agreement | evidence_strength | Label |
-|---|---|---|
-| single lens | NONE / WEAK | LOW |
-| 2+ same-model lenses | NONE / WEAK | MEDIUM (hard cap — same model repeats the same misunderstanding) |
-| cross-model (`/prism-all` only) | NONE / WEAK | MEDIUM-HIGH |
-| any | MEDIUM (location + path + machine-verified quote) | HIGH |
-| cross-model | MEDIUM | HIGH+ |
-| any | STRONG (reproduced) | VERY-HIGH |
-| — | — (`status: REJECTED`) | reported in the REJECTED section, no label |
-
-Cross-model agreement is not available in single-engine prism (its rows never fire here);
-`/prism-all` adds it. For **non-code targets** "evidence" is a document quote, not an execution
-path — cap the label at MEDIUM (a discovery agent already saw the whole doc; re-quoting it is not
-independent grounding).
+Every record carries `reproduction.status`; `STATIC_EVIDENCE_ONLY` / `NOT_RUN` are honest values.
 
 ---
 
@@ -347,19 +216,18 @@ independent grounding).
 
 ```
 PRISM REPORT — {target} — {timestamp}
-Mode: {default | quick | adversarial} [+reproduce] [diff <range>]
-Lenses: {defect | classic} {+improvements}
+Mode: {default | quick | adversarial} [+reproduce] [+redteam] [diff <range>]
+Lenses: defect {+redteam} {+improvements} | classic (deprecated)
+Checklist: {path | none}
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
 ## REPRODUCED (demonstrated failures)
-- PRISM-003 [HIGH|security] src/auth.py:84-102 reset_password — Reset token can be reused
-  path: reset_password → token lookup → update → not invalidated
-  repro: pytest /tmp/prism-tests/test_reset_reuse.py → FAILED as predicted
-  fix: invalidate token row inside the update transaction
+- PRISM-003 [HIGH|security|VERY-HIGH] src/auth.py:84-102 reset_password — Reset token can be reused
+  path: ... | repro: <command> → FAILED as predicted | fix: ...
 
-## SUPPORTED (code-path evidence, not executed)
+## SUPPORTED (code-path evidence, not executed — quotes machine-verified)
 - PRISM-001 [...] file:lines@symbol — claim
-  evidence: file:line — quote | repro: STATIC_EVIDENCE_ONLY | suggested_test: ...
+  [3/5] evidence: file:line — quote | repro: STATIC_EVIDENCE_ONLY | suggested_test: ... | checklist: #14
 
 ## SUSPECTED (needs confirmation — reasoning only)
 - PRISM-007 [...] — claim — missing: REQUIRES_DOMAIN_CONFIRMATION: <question for the operator>
@@ -367,36 +235,41 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 ## REJECTED (transparency)
 - [lens] claim — contradicting evidence: file:line — quote
 
+## ATTACK CHAINS (only with --redteam, or when the Evidence pass linked findings)
+- CHAIN-1: PRISM-002 + PRISM-005 → account takeover (ID leak + missing authz)
+
+## CHECKLIST COVERAGE (only when a project checklist was loaded)
+- [ACTIVE] #14 verified-clean · #21 finding:PRISM-001 · #30 not-probed (out of scope)
+- [N/A] #41 "no payments" — re-activated? this file now calls Stripe
+
 ## IMPROVEMENTS (only with --include-improvements)
+## DEGRADED LENSES (infra — not findings)
 ## PRE-EXISTING, OUT OF SCOPE (only in --diff mode, max 3 lines)
 
 ## Recommended Action Order
-1. REPRODUCED first, then SUPPORTED by severity. SUSPECTED items appear as questions, not tasks.
+1. REPRODUCED first, then SUPPORTED by severity (chains before singletons). SUSPECTED items appear as questions, not tasks.
 ```
 
-With `--format json`, also write `prism-report.json` to the **run's artifacts dir**
-(`${TMPDIR:-${TEMP:-/tmp}}/prism/<slug>-<run-id>/`, or the `--artifacts=docs` location — never the
-project root, which would violate the read-only invariant). Write to a temp file, validate, then
-atomic-rename; on failure emit the JSON inline in the transcript with a `json_output: failed`
-warning rather than failing the run, and print the absolute path in the report header.
-`{ "meta": {target, mode, lenses, engines, timestamp, counts}, "findings": [<record v2>...] }` —
-fingerprints let CI dedup across runs (link by fingerprint; never suppress a prior REJECTED).
-(SARIF output + GitHub Action: roadmap.)
+Record schema, field rules and the confidence table: `references/record-v2.md`.
+
+With `--format json`, write `prism-report.json` to the run's artifacts dir
+(`${TMPDIR:-${TEMP:-/tmp}}/prism/<slug>-<run-id>/`, or `--artifacts=docs` — never the project
+root). Write to a temp file, validate, atomic-rename; on failure emit the JSON inline with a
+`json_output: failed` warning. `{ "meta": {target, mode, lenses, engines, checklist, timestamp,
+counts}, "findings": [<record v2>...] }`. Fingerprints let CI dedup across runs (link only; never
+suppress a prior REJECTED).
 
 ---
 
 ## Rules
 
-- Each Pass 1 agent runs with `context: fork`; launch all in one message (parallel).
-- Pass full target content to each agent. Never summarize the input.
-- **Never modify the target project.** Reproduction runs in a temp dir with a stripped env and no
-  installs (§Pass 3); artifacts default to the temp dir, not the repo.
-- The Evidence Agent grounds candidates in **chunks of ≤8**, not one unbounded call; every quote is
-  machine-checked by `verify-evidence.js` before it can ship as SUPPORTED.
-- Status is **per-run truth**; cross-run dedup links by fingerprint but never carries a prior
-  verdict forward. IDs (`PRISM-00N`) are run-scoped — do not correlate across runs.
+- Each Pass 1 agent runs forked; launch all in one message. Target content first, lens last.
+- Pass full target content. Never summarize the input.
+- **Never modify the target project.** Reproduction runs in a temp dir with a stripped env.
+- Evidence chunks ≤8, grouped by file; every quote machine-checked before it ships as SUPPORTED.
+- Status is per-run truth; IDs are run-scoped; dedup across runs by fingerprint only.
 - Contradicting lenses → surface both; the Evidence pass picks a side only with quoted evidence.
-- Keep synthesis concise: the record carries the detail; prose stays ≤3 lines per finding.
+- Prose ≤3 lines per finding; the record carries the detail.
 
 ## Cost & speed
 
@@ -404,15 +277,20 @@ fingerprints let CI dedup across runs (link by fingerprint; never suppress a pri
 |---|---|---|---|---|
 | `--quick` | 5 | 0 | 0 | 1.0× |
 | default | 5 | ⌈candidates/8⌉ chunked | 0 | 1.3–1.6× |
+| `--redteam` | 6 | ⌈candidates/8⌉ | — | +0.25× |
 | `--reproduce` | 5 | ⌈candidates/8⌉ | ≤5 test runs | 1.6–2.2× |
 | `--include-improvements` | 6 | ⌈candidates/8⌉ | — | +0.2× |
 
-Default includes the evidence pass because ungrounded findings are the #1 failure mode of
-multi-agent review, and the machine quote-check is what keeps the pass from rubber-stamping.
+**Where the tokens go, and how to spend fewer:** (a) the target is sent once per discovery agent —
+use `--diff` for PR review so hunks+context travel instead of whole files; (b) this skill runs in a
+**forked context**, so invoking it at the end of a long session copies that session once before the
+agents spawn — run prism early, or in a fresh session; (c) the Evidence pass re-reads files — the
+by-file chunking above keeps each read to once per chunk; (d) parsing and quote-checking are done
+by scripts, never by the model.
 
 ## Companion skills
 
-- **prism-all** — ships in this plugin: adds a Codex engine for cross-model agreement on the same evidence ladder.
+- **prism-all** / **prism-codex** — ship in this plugin: Codex engine for cross-model agreement (same ladder, same records).
 - **mangchi** — after prism identifies weak files, iteratively harden them (prism finds, mangchi fixes). Separate plugin.
-- **triad** — 3-perspective deliberation for markdown/specs. Separate plugin.
-- **prism-devil** — single-agent red-team probe for security-sensitive targets. Separate plugin (`minwoo-data/prism-devil`), not required by prism.
+- **triad** — 3-perspective deliberation for markdown/specs/plans. Documents go there, not here. Separate plugin.
+- **prism-devil** — retired; absorbed as `--redteam` (0.3.0).
