@@ -318,6 +318,8 @@ currency of confirmation. The most honest sentence in a review is often
 
 ## Updates
 
+- **2026-10-14 (v0.4.1)** — Codex runs in the read-only sandbox (reads only; no writes, no
+  network). `PRISM_CODEX_SANDBOX=bypass` is an explicit per-run opt-out.
 - **2026-10-14 (v0.4.0)** — The Codex invocation contract is a script (`codex-run.sh`): the
   safety preamble, secret scrub, output contract, timeout and effort pin are enforced by code,
   not by the model. Codex-related orchestration text per prism-all run drops from about 39 KB to

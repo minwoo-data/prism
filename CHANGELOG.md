@@ -5,6 +5,23 @@ All notable changes to the Prism plugin are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-10-14
+
+### Changed
+- **Codex runs in the read-only sandbox** (`-s read-only`) instead of
+  `--dangerously-bypass-approvals-and-sandbox`. Commands Codex runs can read files but cannot
+  write them or reach the network: a prompt-injected Codex can no longer exfiltrate over the
+  network, edit the repo, or rewrite its own prompt. Reading and printing a secret is still
+  possible, which the preamble and scrub cover.
+  Measured on Windows (CLI 0.159.3, `[windows] sandbox = "elevated"`): reads inside and outside
+  the working directory work, writes and `curl` are blocked, and the same planted-bug review gave
+  the same finding (13 s vs 16 s unsandboxed).
+- `PRISM_CODEX_SANDBOX=bypass` is the explicit per-run opt-out, for paths the sandbox cannot
+  reach (a Google Drive mount such as `H:` returned "access denied") or machines without sandbox
+  support. Never automatic; the summary line always prints `sandbox=read-only|bypass`. Files the
+  sandbox cannot reach can also be passed as `--target`, since the wrapper reads them itself.
+- Selftest: 45 cases (sandbox default, bypass, invalid value).
+
 ## [0.4.0] - 2026-10-14
 
 The Codex invocation contract is now a script. prism-all and prism-codex call
@@ -64,8 +81,7 @@ to keep them.
 - `PRISM_CODEX_MODEL` passes `-m` for the model fallback in Operator rules.
 
 ### Not changed
-- Codex still runs with `--dangerously-bypass-approvals-and-sandbox`; the preamble and scrub
-  reduce, not remove, what a prompt-injected Codex can disclose (now stated in Operator rules).
+- Codex still ran with `--dangerously-bypass-approvals-and-sandbox` in 0.4.0 (fixed in 0.4.1).
 
 ### Cost
 Codex-related orchestration text in a default prism-all run (5 Codex angles) drops from about
