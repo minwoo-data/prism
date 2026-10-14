@@ -290,6 +290,7 @@ codex --version   # >= 0.125.0
 
 ## 업데이트 기록
 
+- **2026-10-14 (0.4.2)** — prism-all 리뷰로 `codex-run.sh` 보강: 인용·예시 값 오탐 격리 제거, 더 많은 secret 형식 탐지, 임시 출력을 실행 폴더 밖으로, angle당 동시 실행 1개, PowerShell에서도 `--strict` 동작.
 - **2026-10-14 (0.4.1)** — Codex를 read-only 샌드박스로 실행(읽기만, 쓰기·네트워크 차단). 샌드박스 없이 돌리려면 `PRISM_CODEX_SANDBOX=bypass`를 명시.
 - **2026-10-14 (0.4.0)** — Codex 호출 계약을 스크립트(`codex-run.sh`)로 옮김: 안전 문구·secret scrub·출력 계약·타임아웃·effort 고정을 모델 대신 코드가 지킨다. 런당 Codex 관련 지시문이 약 39 KB에서 2.7 KB로 줄었다.
 - **2026-10-13 (0.3.1)** — 0.3.0의 문서 거부를 되돌림: 설계 문서는 design 렌즈셋(구 classic, Code Review → Claim Accuracy)으로 리뷰해 `/ddaro:review` 연동을 복구. Codex 호출은 추론 강도 high·타임아웃 300초로 고정(`PRISM_CODEX_EFFORT`, `PRISM_CODEX_TIMEOUT`으로 변경).

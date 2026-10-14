@@ -318,6 +318,7 @@ currency of confirmation. The most honest sentence in a review is often
 
 ## Updates
 
+- **2026-10-14 (v0.4.2)** — `codex-run.sh` hardening from a prism-all review: no false quarantines on quoted values or placeholder fixes, more secret forms caught, scratch outside the run dir, one attempt per angle, `--strict` works from PowerShell.
 - **2026-10-14 (v0.4.1)** — Codex runs in the read-only sandbox (reads only; no writes, no
   network). `PRISM_CODEX_SANDBOX=bypass` is an explicit per-run opt-out.
 - **2026-10-14 (v0.4.0)** — The Codex invocation contract is a script (`codex-run.sh`): the
