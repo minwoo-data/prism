@@ -16,8 +16,8 @@ file: src/auth.py                # null allowed only for SUSPECTED
 lines: 84-102
 symbol: reset_password
 category: security               # correctness|security|state|integration|testability|redteam|improvement
-                                 # classic lenses map: conflict→integration, devil→correctness,
-                                 # code-review→correctness, robustness→state, improvement→improvement
+                                 # design lenses map: conflict→integration, claim-accuracy→correctness,
+                                 # devil→correctness, robustness→state, improvement→improvement
 severity: HIGH                   # CRIT|HIGH|MED|LOW
 status: SUPPORTED                # SUSPECTED|SUPPORTED|REPRODUCED|REJECTED
 missing: null                    # required string when SUSPECTED (what blocked grounding)
@@ -81,8 +81,9 @@ Label enum: `{LOW, MEDIUM, MEDIUM-HIGH, HIGH, HIGH+, VERY-HIGH}`.
 | any | STRONG (reproduced) | VERY-HIGH |
 | — | — (`status: REJECTED`) | reported in the REJECTED section, no label |
 
-Cross-model rows never fire in single-engine skills. For the deprecated classic lens set on a
-document target, "evidence" is a document quote, not an execution path — cap the label at MEDIUM.
+Cross-model rows never fire in single-engine skills. On a design-doc target, a finding whose evidence
+quotes only the document is capped at MEDIUM (every discovery agent already read the doc); a finding
+whose evidence quotes repository code is graded normally (see `design-lenses.md`).
 
 ## Certainty language
 

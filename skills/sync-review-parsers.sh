@@ -2,7 +2,7 @@
 # Single-source the deterministic scripts AND the shared reference docs. Canonical = prism-all/*.
 # prism-codex and prism receive generated copies. Run after editing a canonical.
 #
-# parse-findings.js, verify-evidence.js, references/{record-v2,redteam-lens,classic-lenses}.md are
+# parse-findings.js, verify-evidence.js, references/{record-v2,redteam-lens,design-lenses}.md are
 # byte-identical across skills → plain copy.
 # references/codex-invocation.md exists only in the Codex-backed skills; prism-codex gets a
 # name-rewritten copy.
@@ -11,7 +11,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
-IDENTICAL=(parse-findings.js verify-evidence.js references/record-v2.md references/redteam-lens.md references/classic-lenses.md)
+IDENTICAL=(parse-findings.js verify-evidence.js references/record-v2.md references/redteam-lens.md references/design-lenses.md)
 
 # 1. Identical files: copy verbatim.
 mkdir -p "$here/prism-codex/references" "$here/prism/references"

@@ -15,7 +15,7 @@ const { execSync } = require('child_process');
 
 const SELF_NAME = 'prism-codex';
 // Required at rest: the contract + the deterministic scripts it invokes.
-const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/classic-lenses.md', 'references/codex-invocation.md'];
+const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/codex-invocation.md'];
 // Scripts that must pass their own --selftest under --strict (integrity, not just presence).
 const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js'];
 const PREREQUISITES = [

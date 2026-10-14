@@ -1,7 +1,7 @@
 ---
 name: prism-all
-description: Dual-engine evidence-graded code review. Runs 5 defect lenses on BOTH Claude subagents and Codex CLI in parallel — 10 discovery calls — then an Evidence pass pins every candidate to file/lines/execution-path. Statuses SUSPECTED → SUPPORTED → REPRODUCED; cross-model agreement raises priority and baseline confidence, but only evidence confirms. --redteam adds an attacker-mindset lens on both engines. Code only; documents go to /triad. Triggers on "/prism-all <target>", "prism all로", "크로스모델 prism".
-argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--redteam] [--include-improvements] [--format json] [--verifier=claude|codex|both] [--artifacts=temp|docs]"
+description: Dual-engine evidence-graded code review. Runs 5 defect lenses on BOTH Claude subagents and Codex CLI in parallel — 10 discovery calls — then an Evidence pass pins every candidate to file/lines/execution-path. Statuses SUSPECTED → SUPPORTED → REPRODUCED; cross-model agreement raises priority and baseline confidence, but only evidence confirms. --redteam adds an attacker-mindset lens on both engines. Design docs get the design lens set (pair with /triad for writing quality). Triggers on "/prism-all <target>", "prism all로", "크로스모델 prism".
+argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--redteam] [--include-improvements] [--lenses=design] [--format json] [--verifier=claude|codex|both] [--artifacts=temp|docs]"
 user-invocable: true
 ---
 
@@ -15,7 +15,7 @@ user-invocable: true
 이 skill 디렉토리의 파일: `parse-findings.js`, `verify-evidence.js`(결정론 스크립트, load-bearing),
 `references/codex-invocation.md`(Codex 호출 계약 — preamble·템플릿·scrub·fallback·사건 기록),
 `references/record-v2.md`(finding 스키마 + confidence 표), `references/redteam-lens.md`,
-`references/classic-lenses.md`(deprecated). 참조 파일은 아래 단계가 지시할 때만 읽는다.
+`references/design-lenses.md`(문서용 design 렌즈셋). 참조 파일은 아래 단계가 지시할 때만 읽는다.
 
 ## Evidence 사다리
 
@@ -38,13 +38,12 @@ user-invocable: true
 
 ## 렌즈 × 2 엔진
 
-기본 **DEFECT 렌즈셋** (코드 전용): Correctness & Contracts / Security & Trust Boundaries /
+코드 대상은 **DEFECT 렌즈셋**: Correctness & Contracts / Security & Trust Boundaries /
 State, Concurrency & Recovery / Integration & Regression / Testability & Observability — 양 엔진 각 1.
 
 - `--redteam` → 6번째 **Red Team** 렌즈(양 엔진). 프롬프트는 `references/redteam-lens.md`. 공격 체인·체크리스트 커버리지 섹션 추가.
 - `--include-improvements` → **Improvement** 렌즈 추가(양 엔진), `category: improvement`로 분리 집계.
-- `--lenses=classic` → **deprecated(0.4 제거)**. 구 렌즈셋, 명시할 때만. `references/classic-lenses.md`.
-- **비코드 대상(문서·계획)은 거부**: `prism은 코드 리뷰어 — 문서는 /triad <file>` 출력 후 중단. 명시적 `--lenses=classic`만 예외(헤더에 deprecated 표기).
+- **문서·설계·계획 대상은 DESIGN 렌즈셋 자동** (`--lenses=design`으로 강제, `classic`은 별칭): Conflict & Reuse / Claim Accuracy / Devil's Advocate / Robustness 4축 / Improvement. 프롬프트는 `references/design-lenses.md`. prism은 "설계가 맞는가", `/triad`는 "문서로서 잘 쓰였는가" — `/ddaro:review`가 둘 다 돌린다. 헤더에 `Lenses: defect|design (auto|explicit)` 표기.
 - **프로젝트 보안 체크리스트**: Pass 1 전에 `docs/security-checklist.md` → `docs/security/checklist.md` → `SECURITY.md` → `docs/SECURITY.md` 순으로 첫 파일을 읽어(≤3 tool call) **Security·Red Team 렌즈에만** 전달.
 
 ## 전제 (Prerequisite)
@@ -64,6 +63,7 @@ State, Concurrency & Recovery / Integration & Regression / Testability & Observa
 | `--reproduce` | + 재현 pass (SUPPORTED CRIT/HIGH 우선, 최대 5건, 임시 디렉토리) |
 | `--redteam` | + Red Team 렌즈 양 엔진 (12 discovery) |
 | `--include-improvements` | Improvement 렌즈 추가(분리 집계) |
+| `--lenses=design` | DESIGN 렌즈셋 강제 (markdown 대상은 자동, `classic`은 별칭) |
 | `--format json` | finding record v2를 `prism-report.json`으로도 출력 |
 | `--verifier=claude` (기본) / `codex` / `both` | Evidence pass 엔진. `both`: 둘 다 SUPPORTED일 때만 SUPPORTED, 엇갈림 = SUSPECTED + 양쪽 근거 병기 |
 | `--artifacts=temp` (기본) / `docs` | 산출물 위치. `docs`는 `docs/prism-all/<slug>`, .gitignore 필수 |
@@ -75,7 +75,7 @@ State, Concurrency & Recovery / Integration & Regression / Testability & Observa
 
 **한 메시지 안에서 전부 병렬**:
 - Claude 5(+1): `Agent` tool × 렌즈 수, forked context.
-- Codex 5(+1): **렌즈당 별도 `Bash` 호출** (한 Bash에 순차 금지 — 외부 타임아웃·hang 시 뒷 렌즈가 파일 없이 유실). 발사 전 각 `$OUT`을 `[fallback: not-started]`로 미리 생성 → 안 채워진 렌즈 = degraded 확정. **첫 Codex 호출 전에 `references/codex-invocation.md`를 읽고 그 템플릿을 그대로 쓴다** (preamble prepend·180K 가드·180s timeout·secret scrub·`--output-last-message` 전부 포함).
+- Codex 5(+1): **렌즈당 별도 `Bash` 호출** (한 Bash에 순차 금지 — 외부 타임아웃·hang 시 뒷 렌즈가 파일 없이 유실). 발사 전 각 `$OUT`을 `[fallback: not-started]`로 미리 생성 → 안 채워진 렌즈 = degraded 확정. **첫 Codex 호출 전에 `references/codex-invocation.md`를 읽고 그 템플릿을 그대로 쓴다** (preamble prepend·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message` 전부 포함).
 
 Wall time ≈ max(Claude 5 parallel ≈ 20~40s, Codex 5 ≈ 100~200s) = Codex 병목.
 
@@ -167,7 +167,7 @@ node "<skill dir>/verify-evidence.js" records.json "<repo-root>" > checked.json
 
 ```
 PRISM-ALL REPORT — {target} — {timestamp}
-Mode: {default | quick | adversarial} [+reproduce] [+redteam] · Lenses: defect {+redteam} {+improvements} | classic (deprecated)
+Mode: {default | quick | adversarial} [+reproduce] [+redteam] · Lenses: defect | design {+redteam} {+improvements} ({auto|explicit})
 Engines: Claude {n}/5 + Codex {n}/5{ (degraded: <lenses>)} · Evidence: {claude | codex | both} · Checklist: {path | none}
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected  (infra-degraded: D)
 
@@ -220,7 +220,7 @@ node verify-independence.js --strict   # 필수 파일 + 스크립트 selftest +
 | `/prism-codex` | Codex 5 + Codex Evidence | 다른 모델 ensemble / Claude 토큰 절약 |
 | `/prism-all` (이 skill) | Claude 5 + Codex 5 + Evidence | 최고 신뢰 |
 
-셋 다 독립 — 런타임에 다른 plugin 파일을 참조하지 않는다. 결정론 스크립트와 `references/*.md`의 정본은 prism-all, 사본은 `skills/sync-review-parsers.sh`로 생성·검증. 문서/계획 리뷰는 `/triad`, 반복 수정은 `/mangchi`, 구 `prism-devil`은 `--redteam`으로 흡수.
+셋 다 독립 — 런타임에 다른 plugin 파일을 참조하지 않는다. 결정론 스크립트와 `references/*.md`의 정본은 prism-all, 사본은 `skills/sync-review-parsers.sh`로 생성·검증. 문서의 글 품질은 `/triad`(설계 건전성은 이 skill의 design 렌즈), 반복 수정은 `/mangchi`, 구 `prism-devil`은 `--redteam`으로 흡수.
 
 ## 안티패턴
 
@@ -234,5 +234,5 @@ node verify-independence.js --strict   # 필수 파일 + 스크립트 selftest +
 - ❌ 한 엔진 실패 시 조용히 다른 쪽만으로 — fallback 태그 + 헤더 명시
 - ❌ argv로 Codex 호출 / SANDBOX SAFETY PREAMBLE 누락 / post-run scrub 건너뜀 (`references/codex-invocation.md` 불변 1·6·7)
 - ❌ `.env`·`*secret*`이 있는 작업 디렉토리에서 실행
-- ❌ 문서를 prism으로 — `/triad`
+- ❌ 문서의 글 품질(명확성·온보딩)을 prism에 기대함 — 그건 `/triad`. design 렌즈는 설계 건전성만 본다
 - ❌ 다른 plugin/skill 파일 런타임 참조

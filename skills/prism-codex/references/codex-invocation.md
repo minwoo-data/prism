@@ -11,7 +11,11 @@ call template, the secret-scrub patterns, the fallback policy and the incident t
 3. **Dynamic content is appended with `cat file >>`** — never `echo "$VAR" >>` (a backtick or
    `$(...)` inside a reviewer's own output would be shell-expanded).
 4. **180K-char guard per call** — oversized → mark the angle degraded and continue, never `exit`.
-5. **Timeout 180s** (`timeout 180 codex exec ...`).
+5. **Timeout 300s, reasoning effort high** — `timeout "${PRISM_CODEX_TIMEOUT:-300}" codex exec -c
+   model_reasoning_effort="${PRISM_CODEX_EFFORT:-high}" ...`. The skill pins `high` regardless of the
+   `~/.codex/config.toml` default (xhigh exhausts the Codex usage limit within a few calls). Override
+   per run with `PRISM_CODEX_EFFORT` / `PRISM_CODEX_TIMEOUT`. Measured (CLI 0.159.3, gpt-6-astra,
+   24 KB prompt): high 44 s, xhigh 113 s, max 227 s; 300 s leaves headroom to raise the effort.
 6. **Sandbox Safety Preamble prepended to every prompt** (first bytes of the file — the agent
    prompt can never override it).
 7. **Secret scrub applied to every output** before anything enters the report or transcript.
@@ -64,7 +68,7 @@ emit secrets in the first place.
 BASE="${TMPDIR:-${TEMP:-/tmp}}/prism-codex"
 DIR="$BASE/<slug>-<run-id>"                    # run-id = timestamp/PID
 mkdir -p "$DIR"; chmod 700 "$BASE" "$DIR" 2>/dev/null
-AGENT="<correctness|security|state|integration|testability|redteam>"   # classic: conflict|improvement|devil|code-review|robustness
+AGENT="<correctness|security|state|integration|testability|redteam>"   # design: conflict|claim-accuracy|devil|robustness|improvement
 PROMPT="$DIR/pass1.codex.$AGENT.prompt.txt"
 OUT="$DIR/pass1.codex.$AGENT.codex.txt"
 
@@ -95,7 +99,8 @@ if [ "$BYTES" -gt 180000 ]; then echo "[fallback: prompt-too-large]" > "$OUT"; e
 
 # Each angle is its own Bash invocation. Do NOT loop all angles inside one Bash — an outer
 # timeout/hang then loses later angles as missing files.
-timeout 180 codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+timeout "${PRISM_CODEX_TIMEOUT:-300}" codex exec -c model_reasoning_effort="${PRISM_CODEX_EFFORT:-high}" \
+  --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
   --output-last-message "$OUT.msg" < "$PROMPT" > "$OUT.raw" 2>&1 || {
   # keep the stderr tail so the operator can tell config-error vs timeout vs auth
   echo "[fallback: codex-unavailable] $(tail -c 300 "$OUT.raw" 2>/dev/null | tr '\n' ' ')" > "$OUT"

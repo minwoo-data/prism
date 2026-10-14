@@ -47,7 +47,8 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 | Claude + Codex 교차 검토 | `/prism-all` (이 플러그인에 포함) |
 | 보안·공격자 관점 심층 프로브 | `/prism <target> --redteam` (prism-devil은 0.3.0에서 흡수) |
 | 실제 코드 수정 반복 | [mangchi](https://github.com/minwoo-data/mangchi) |
-| 문서·설계 검토 | [triad](https://github.com/minwoo-data/triad) — prism은 문서를 거부한다 |
+| 설계 문서가 맞는지 (충돌·코드 대비 주장 검증·실패 모드) | `/prism <doc>` (design 렌즈셋, markdown이면 자동) |
+| 문서가 잘 읽히는지 (LLM 명확성·수명·온보딩) | [triad](https://github.com/minwoo-data/triad) |
 | worktree 병렬 세션 + 안전한 merge | [ddaro](https://github.com/minwoo-data/ddaro) |
 
 ---
@@ -107,7 +108,7 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 
 선택 렌즈: **Red Team** (`--redteam`) — 구 `prism-devil`에서 흡수한 공격자 마인드 심층 프로브. 10개 공격 표면을 우선순위대로 훑고, 체크리스트 항목에 교차 참조하고, 둘 이상이 합쳐지는 공격 체인을 이름 붙인다. 다른 렌즈와 똑같이 Evidence pass를 거친다. **Improvement** (`--include-improvements`) — 결함 리포트를 시끄럽게 하지 않도록 기본에서 제외.
 
-**prism은 코드 전용**이다. 문서·설계·계획을 넘기면 `/triad`로 안내하고 멈춘다. 구 0.1 렌즈셋(`--lenses=classic`)은 deprecated — 0.4에서 제거.
+**문서·설계·계획**에는 **design 렌즈셋**이 자동으로 붙는다 (충돌·재사용 / 코드 대비 주장 검증 / devil's advocate / 설계된 시스템의 robustness / 개선안). prism은 "설계가 맞는가", triad는 "문서로서 잘 쓰였는가"를 본다. `/ddaro:review`가 둘 다 돌린다.
 
 각 렌즈는 **forked context**에서 실행 — 서로의 응답을 볼 수 없다. 프롬프트는 **target 먼저, 렌즈 정의 나중** 순으로 조립해 공통 prefix가 prompt cache를 타게 한다.
 
@@ -143,6 +144,7 @@ discovery 후 모든 finding은 **후보**다 — 자동 확정은 없다:
 /prism src/services/auth.py --adversarial   # Evidence pass가 자기 REJECT에 반박
 /prism src/services/auth.py --redteam       # + 공격자 렌즈, 체크리스트, 공격 체인
 /prism --diff main...HEAD                   # 변경 범위 리뷰 (PR에 권장)
+/prism docs/design/billing.md               # 설계 문서 → design 렌즈셋 (자동)
 /prism .                                    # 프로젝트 전체
 ```
 
@@ -279,7 +281,7 @@ codex --version   # >= 0.125.0
 ## 이런 작업엔 쓰지 마세요
 
 - **1줄 짜리 변경** — 과잉
-- **markdown/스펙 리뷰** — prism이 거부한다. `/triad` (3 관점 숙의)로
+- **문서가 잘 읽히는지 다듬기** — `/triad` (3 관점 숙의). prism design 렌즈는 설계 건전성만 본다
 - **한 파일 반복 다듬기** — `/mangchi` (Codex와 cross-model 망치질)가 더 적합
 
 ## 철학
@@ -288,6 +290,7 @@ codex --version   # >= 0.125.0
 
 ## 업데이트 기록
 
+- **2026-10-13 (0.3.1)** — 0.3.0의 문서 거부를 되돌림: 설계 문서는 design 렌즈셋(구 classic, Code Review → Claim Accuracy)으로 리뷰해 `/ddaro:review` 연동을 복구. Codex 호출은 추론 강도 high·타임아웃 300초로 고정(`PRISM_CODEX_EFFORT`, `PRISM_CODEX_TIMEOUT`으로 변경).
 - **2026-10-13 (0.3.0)** — 코드 전용으로 정리, `prism-devil`을 `--redteam`으로 흡수, 보안 체크리스트 자동 로드, SKILL.md 다이어트(참조 파일 분리), target-first 프롬프트 순서, 파일 단위 Evidence 청킹. 상세는 CHANGELOG.
 - **2026-04-24** — 새 자매 skill `/prism-codex` (Codex 전용)과 `/prism-all` (dual-engine) 추가. Codex CLI 마이그레이션 writeup은 자매 triad 플러그인의 [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md). Codex 기반 variant 첫 사용 시 "model does not exist" 에러 만나면 먼저 읽어보세요.
 
