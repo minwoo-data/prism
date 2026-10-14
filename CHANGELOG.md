@@ -5,6 +5,41 @@ All notable changes to the Prism plugin are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+prism-ideas, slice S1 of `docs/design/prism-ideas.md`: the idea pass's contracts and its
+deterministic gate. No skill calls it yet, so prism's behavior does not change.
+
+### Added
+- **`verify-ideas.js`** (canonical in prism-all, synced to prism and prism-codex):
+  - `gate` keeps the richest `PRISM-IDEAS v1` fence (ties go to the last fence) and validates every
+    JSON line. Ideas past the 3rd per lens become `OVER_CAP`.
+  - `gate` checks every ground. A finding ID counts only if `checked.json` has it as
+    `SUPPORTED`/`REPRODUCED`. A `path:lines — quote` counts only if the quote is really at those
+    lines, in a file under the repo root or a `--context` file. Quotes span at most 40 lines, are at
+    least 8 characters, and never come from credential files. No valid ground means `UNGROUNDED`.
+  - `check` applies `PRISM-IDEA-CHECK v1` verdicts. An "exists"/"conflicts" `DROP` without a
+    verified quote becomes `WEAK`, and a missing verdict becomes `UNCHECKED`.
+  - `rank` sets `cross_model` only from explicit groups and orders ideas by content alone.
+  - `--selftest` (47 cases; 24 deliberate code and contract breaks are all caught).
+- **`templates/ideas-contract.md`** and **`templates/idea-check-contract.md`**: the two output
+  formats, each in one file that is appended verbatim and last to every prompt that needs it.
+  The selftest fails if a contract stops naming a field or value the script enforces.
+- **`references/ideas.md`**: the three idea lenses (class / route / subtract), the checker prompt,
+  the prompt assembly order and the ranking rules.
+
+### Changed
+- `verify-evidence.js` exports its quote matcher (`quoteWindow` / `quoteInWindow`) for
+  verify-ideas.js. Its CLI output and selftest are unchanged, and the CLI only runs when invoked
+  directly.
+- `verify-independence.js` requires the new files and runs `verify-ideas.js --selftest` under
+  `--strict`.
+
+### Fixed
+- `sync-review-parsers.sh` reported "synced" even when a copy failed to land (a failed `mv` inside
+  `a && b` does not trip `set -e`). It now creates missing directories and exits 1 on any failed
+  step.
+
 ## [0.4.2] - 2026-10-14
 
 Hardening of `codex-run.sh` from a prism-all review of the same code ported to triad (39 findings

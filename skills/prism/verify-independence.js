@@ -15,9 +15,9 @@ const { execSync } = require('child_process');
 
 const SELF_NAME = 'prism';
 // Required at rest: the contract + the deterministic scripts it invokes.
-const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md'];
+const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/ideas.md', 'templates/ideas-contract.md', 'templates/idea-check-contract.md'];
 // Scripts that must pass their own --selftest under --strict (integrity, not just presence).
-const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js'];
+const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js', 'verify-ideas.js'];
 const PREREQUISITES = []; // prism is Claude-only — no external CLI prerequisite
 
 const SELF_DIR = __dirname;
