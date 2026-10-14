@@ -318,6 +318,10 @@ currency of confirmation. The most honest sentence in a review is often
 
 ## Updates
 
+- **2026-10-14 (v0.4.0)** — The Codex invocation contract is a script (`codex-run.sh`): the
+  safety preamble, secret scrub, output contract, timeout and effort pin are enforced by code,
+  not by the model. Codex-related orchestration text per prism-all run drops from about 39 KB to
+  about 2.7 KB. See CHANGELOG.
 - **2026-07-14 (v0.2.0)** — Evidence over agreement: statuses SUSPECTED/SUPPORTED/REPRODUCED/REJECTED,
   mandatory Evidence pass for all candidates (same-model agreement no longer auto-confirms),
   finding records v2 with stable fingerprints, `--reproduce` (temp-dir failing tests),

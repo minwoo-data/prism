@@ -15,9 +15,9 @@ const { execSync } = require('child_process');
 
 const SELF_NAME = 'prism-codex';
 // Required at rest: the contract + the deterministic scripts it invokes.
-const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/codex-invocation.md'];
+const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/codex-invocation.md', 'codex-run.sh'];
 // Scripts that must pass their own --selftest under --strict (integrity, not just presence).
-const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js'];
+const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js', 'codex-run.sh'];
 const PREREQUISITES = [
   { cmd: 'codex --version', label: 'Codex CLI', fatal: true, min: '0.125.0' },
 ];
@@ -92,11 +92,12 @@ function checkNoCrossRefs() {
 function checkScripts() {
   for (const rel of SELFTEST_SCRIPTS) {
     const script = path.join(SELF_DIR, rel);
+    const runner = rel.endsWith('.sh') ? 'bash' : 'node';
     try {
-      execSync(`node "${script}" --selftest`, { stdio: ['ignore', 'ignore', 'ignore'] });
+      execSync(`${runner} "${script}" --selftest`, { stdio: ['ignore', 'ignore', 'ignore'] });
       ok(`selftest passed: ${rel}`);
     } catch (e) {
-      fail(`selftest FAILED: ${rel} (\`node ${rel} --selftest\` exited non-zero)`);
+      fail(`selftest FAILED: ${rel} (\`${runner} ${rel} --selftest\` exited non-zero)`);
     }
   }
 }

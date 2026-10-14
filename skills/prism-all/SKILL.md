@@ -12,8 +12,9 @@ user-invocable: true
 > 코드 위치·실행 경로·인용을 붙였을 때(SUPPORTED), 가능하면 실패 테스트로 재현했을 때(REPRODUCED)만.
 > 코드/target은 절대 수정하지 않는다 — 리포트만 산출 (재현 테스트는 임시 디렉토리 전용).
 
-이 skill 디렉토리의 파일: `parse-findings.js`, `verify-evidence.js`(결정론 스크립트, load-bearing),
-`references/codex-invocation.md`(Codex 호출 계약 — preamble·템플릿·scrub·fallback·사건 기록),
+이 skill 디렉토리의 파일: `codex-run.sh`(Codex 호출 계약을 코드로 — preamble·stdin·가드·timeout·scrub·파싱),
+`parse-findings.js`, `verify-evidence.js`(결정론 스크립트, load-bearing),
+`references/codex-invocation.md`(왜 그런 계약인지 — 불변식·fallback 정책·사건 기록, 렌즈가 degraded일 때만 읽는다),
 `references/record-v2.md`(finding 스키마 + confidence 표), `references/redteam-lens.md`,
 `references/design-lenses.md`(문서용 design 렌즈셋). 참조 파일은 아래 단계가 지시할 때만 읽는다.
 
@@ -75,7 +76,18 @@ State, Concurrency & Recovery / Integration & Regression / Testability & Observa
 
 **한 메시지 안에서 전부 병렬**:
 - Claude 5(+1): `Agent` tool × 렌즈 수, forked context.
-- Codex 5(+1): **렌즈당 별도 `Bash` 호출** (한 Bash에 순차 금지 — 외부 타임아웃·hang 시 뒷 렌즈가 파일 없이 유실). 발사 전 각 `$OUT`을 `[fallback: not-started]`로 미리 생성 → 안 채워진 렌즈 = degraded 확정. **첫 Codex 호출 전에 `references/codex-invocation.md`를 읽고 그 템플릿을 그대로 쓴다** (preamble prepend·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message` 전부 포함).
+- Codex 5(+1): **렌즈당 별도 `Bash` 호출로 `codex-run.sh`를 실행** (한 Bash에 순차 금지 — 외부 타임아웃·hang 시 뒷 렌즈가 파일 없이 유실). Bash tool `timeout`은 330000 이상. 호출 템플릿을 손으로 쓰지 않는다 — Sandbox Safety Preamble·tempfile+stdin·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message`·`[fallback: not-started]` 선생성·`parse-findings.js` 추출을 스크립트가 강제한다.
+
+```bash
+# 런당 1회, 출력된 경로를 이후 호출에 그대로 쓴다. --artifacts docs는 .gitignore에 없으면 거부된다.
+bash "<skill dir>/codex-run.sh" init <slug> [--artifacts docs]
+# 렌즈당 Bash 1개. heredoc에는 렌즈 정의만 — 출력 계약(PRISM-FINDINGS v1)은 스크립트가 붙인다.
+bash "<skill dir>/codex-run.sh" discovery <run-dir> <angle> --target <file> [--target <file>]... [--checklist <file>] <<'EOF'
+<렌즈 프롬프트>
+EOF
+```
+
+`<angle>`: `correctness|security|state|integration|testability|redteam|improvement` (design: `conflict|claim-accuracy|devil|robustness|improvement`). 체크리스트는 `security`·`redteam`에만 들어간다(다른 angle이면 스크립트가 버린다). stdout = 요약 1줄(`status=ok|degraded(<사유>)|secret-scrubbed findings=N`) + 파서 JSON. 실패한 렌즈도 exit 0 + `degraded:true` — 라운드는 계속된다. exit 2는 인자 오류뿐. 사유별 처리는 `references/codex-invocation.md` §Fallback policy.
 
 Wall time ≈ max(Claude 5 parallel ≈ 20~40s, Codex 5 ≈ 100~200s) = Codex 병목.
 
@@ -140,6 +152,7 @@ Evidence Agent 프롬프트:
 > 8. 둘 이상이 합쳐져 더 큰 결과가 되면 같은 `chain` id.
 > 9. 후보마다 finding record v2 1건, `<<<PRISM-RECORDS v2>>>` ~ `<<<END>>>` 펜스 안에 한 줄 JSON. 스키마는 `references/record-v2.md`. `evidence_strength`: NONE/WEAK/MEDIUM (STRONG은 Pass 3만).
 >
+> `--verifier=codex|both`의 Codex 콜: `bash "<skill dir>/codex-run.sh" evidence <run-dir> evidence-<n> [--target <file>]... <<'EOF'` + 위 프롬프트·후보·record v2 계약 + `EOF` (preamble·timeout·scrub은 스크립트가 붙인다).
 > `--verifier=both`: Claude·Codex 각 1콜. 둘 다 SUPPORTED → SUPPORTED. 한쪽 실패 → 생존 엔진 단독(헤더 플래그). SUPPORTED×REJECTED → SUSPECTED + 양쪽 근거 Conflicting에 병기. 둘 다 REJECTED → REJECTED.
 > `--adversarial`: REJECT 확정 전 리뷰어 편에서 반박 — 반박이 더 구체적·근거 우위일 때만 REJECT.
 
@@ -155,7 +168,7 @@ node "<skill dir>/verify-evidence.js" records.json "<repo-root>" > checked.json
 
 프로젝트는 **절대 수정하지 않는다**. Actor: main agent(또는 Bash 권한 Reproduction Agent) — Evidence Agent는 코드를 실행하지 않는다. 대상: 기계 검증 통과 `SUPPORTED`만, CRIT/HIGH 우선, **런당 최대 5건**(초과분 `STATIC_EVIDENCE_ONLY`).
 
-**실행 안전(불변 — "임시 디렉토리"는 쓰기 가드일 뿐 실행 샌드박스가 아니다)**: target import는 모듈 레벨 부작용을 운영자 env로 실행한다. 재현 명령은 반드시 ① `env -i` + allowlist(PATH·언어 런타임·필요시 HOME) ② cwd = 임시 디렉토리 ③ 네트워크 차단(가능 시) ④ **설치 금지**(PATH의 러너만) ⑤ 첫 실행 전 운영자 confirm 1회 ⑥ 출력에 secret scrub(`references/codex-invocation.md` 패턴) 적용.
+**실행 안전(불변 — "임시 디렉토리"는 쓰기 가드일 뿐 실행 샌드박스가 아니다)**: target import는 모듈 레벨 부작용을 운영자 env로 실행한다. 재현 명령은 반드시 ① `env -i` + allowlist(PATH·언어 런타임·필요시 HOME) ② cwd = 임시 디렉토리 ③ 네트워크 차단(가능 시) ④ **설치 금지**(PATH의 러너만) ⑤ 첫 실행 전 운영자 confirm 1회 ⑥ 출력 로그에 `bash "<skill dir>/codex-run.sh" scrub <로그 파일>...` 적용(exit 3 = 치환됨 → scrub 이벤트).
 
 절차: ① 기존 테스트 먼저 검색(격리 실행 + baseline 비교) ② PATH의 러너 감지(pytest/vitest/jest/node --test/go test/cargo test — 없으면 `NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT`) ③ `${TMPDIR:-${TEMP:-/tmp}}/prism-tests/`(`mktemp -d`)에 최소 실패 테스트 작성 ④ **예상 실패 시그니처를 record에 먼저 등록** ⑤ per-test 60s(총 5min), exit code·duration·tail 원문 기록, **2회 연속 동일**해야 인정.
 
@@ -209,7 +222,7 @@ REPRODUCED → SUPPORTED severity 순(chain 먼저). SUSPECTED는 task가 아니
 ## 자립성 검증
 
 ```bash
-node verify-independence.js --strict   # 필수 파일 + 스크립트 selftest + Codex CLI >= 0.125.0
+node verify-independence.js --strict   # 필수 파일 + 스크립트 selftest(codex-run.sh 포함) + Codex CLI >= 0.125.0
 ```
 
 ## 자매 skill
@@ -232,7 +245,7 @@ node verify-independence.js --strict   # 필수 파일 + 스크립트 selftest +
 - ❌ 재현 실패(테스트 통과)를 조용히 버림 — 강등 + 통과 로그 인용
 - ❌ Cross-model agreement를 singleton 급으로 격하
 - ❌ 한 엔진 실패 시 조용히 다른 쪽만으로 — fallback 태그 + 헤더 명시
-- ❌ argv로 Codex 호출 / SANDBOX SAFETY PREAMBLE 누락 / post-run scrub 건너뜀 (`references/codex-invocation.md` 불변 1·6·7)
+- ❌ `codex exec`를 직접 호출하거나 자체 실행 스크립트를 만듦 — preamble·scrub·출력 계약이 빠진다. Codex는 `codex-run.sh`로만
 - ❌ `.env`·`*secret*`이 있는 작업 디렉토리에서 실행
 - ❌ 문서의 글 품질(명확성·온보딩)을 prism에 기대함 — 그건 `/triad`. design 렌즈는 설계 건전성만 본다
 - ❌ 다른 plugin/skill 파일 런타임 참조
