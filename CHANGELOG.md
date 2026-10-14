@@ -5,6 +5,49 @@ All notable changes to the Prism plugin are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-10-14
+
+Hardening of `codex-run.sh` from a prism-all review of the same code ported to triad (39 findings
+confirmed; the shared ones are fixed here).
+
+### Fixed
+- **False quarantines:** a reviewer quoting a target value in backticks or with a Korean particle,
+  or writing a placeholder fix (`<your-password>`, `your-client-secret`), quarantined the whole
+  angle. Values are now compared without trailing punctuation/quotes and placeholders are ignored.
+- **Missed secrets:** `NAME_SECRET_KEY=` / `AWS_SECRET_ACCESS_KEY:` style names, `sk-ant-oat01-`,
+  `sk_live_`, `gho_`/`ghs_`, URL passwords (`scheme://user:pw@`) and JWTs are now caught.
+- **Prompt scan failure was masked** (no pipefail: the status was `sort`'s); Codex then ran and the
+  result was mislabelled as a prompt modification. Now `prompt-build-failed` before any call.
+- A scan failure after the call gets its own `scan-failed` marker; markers name the stream.
+- `PRISM_CODEX_TIMEOUT=00` meant "no limit" to GNU timeout; leading zeros and values above 570 are
+  refused (the caller's Bash timeout caps at 600 s).
+- Interrupted calls now also write their DEGRADED JSON (still exit 130).
+- The `no-last-message` marker keeps the stderr tail; failure tails are printable ASCII with fence
+  brackets removed, so they can never parse as findings.
+- After the launcher exits, its whole process group is killed before the scrub reads the files;
+  the watchdog no longer turns a just-finished answer into a timeout.
+- Credential-file refusal covers the preamble's families (`*.env`, `.envrc`, `dotenv`, `*.token`,
+  `id_*`, `.git-credentials`, `secrets.yaml`, `*credential*.json`, ...), case-insensitively,
+  through symlink chains, for `--checklist` too.
+- `verify-independence.js --strict` picked WSL's `bash.exe` when run from PowerShell and failed
+  with no reason shown; it now prefers Git Bash, prints the failing cases, has a timeout, and checks
+  that the installed Codex CLI accepts every flag the script passes.
+- `sync-review-parsers.sh` compared after copying (its drift check could never fail) and lost the
+  sed-generated copies in a subshell; it now builds copies in a temp dir, reports drift first, and
+  has `--check`.
+- The selftest no longer inherits `PRISM_CODEX_*` from the caller.
+
+### Added
+- Unscrubbed scratch (prompt in progress, raw stream, last message) moved to a private dir under
+  `$TMPDIR`; a hard-killed run's scratch is removed by the next run.
+- One attempt per angle at a time (lock; a dead owner's lock is taken over).
+- A rerun keeps a previous security marker as `*.incident.<timestamp>` instead of overwriting it.
+- `model=` / `effort=` in the summary line; `status`, `model`, `effort`, `sandbox`, `seconds` in
+  the JSON.
+- Selftest: 57 cases, including a self-scan that keeps literal secret-shaped strings out of the script (GitHub push protection blocked a fake key once), each new protection mutation-tested (11 mutants, each caught). It also
+  checks that SKILL.md still carries the findings grammar the script appends.
+- SKILL.md: Bash timeout rule, exit codes, which statuses may be retried.
+
 ## [0.4.1] - 2026-10-14
 
 ### Changed

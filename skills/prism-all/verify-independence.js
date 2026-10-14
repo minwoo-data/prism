@@ -87,21 +87,54 @@ function checkNoCrossRefs() {
   ok(`no cross-plugin references in ${files.length} scanned files`);
 }
 
-// --strict: the scripts must not just exist, they must pass their own selftest.
-// A load-bearing parser/evidence-checker that has silently broken is worse than absent.
+// Windows: from PowerShell/cmd the first `bash` on PATH is often System32\bash.exe (the WSL
+// launcher), which cannot open C:\ paths. Prefer Git Bash; CODEX_RUN_BASH overrides.
+function resolveBash() {
+  if (process.env.CODEX_RUN_BASH) return process.env.CODEX_RUN_BASH;
+  if (process.platform !== 'win32') return 'bash';
+  const cands = [];
+  try {
+    const gitExec = execSync('git --exec-path', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    cands.push(path.join(gitExec, '..', '..', '..', 'bin', 'bash.exe'));
+  } catch (e) { /* git not on PATH */ }
+  cands.push('C:\\Program Files\\Git\\bin\\bash.exe');
+  for (const c of cands) if (fs.existsSync(c)) return c;
+  return 'bash';
+}
+
+// --strict: the scripts must not just exist, they must pass their own selftest. A failure prints
+// the failing cases (or the tail) so the reason is visible.
 function checkScripts() {
+  const bash = resolveBash();
   for (const rel of SELFTEST_SCRIPTS) {
     const script = path.join(SELF_DIR, rel);
-    const runner = rel.endsWith('.sh') ? 'bash' : 'node';
+    const runner = rel.endsWith('.sh') ? bash : 'node';
     try {
-      execSync(`${runner} "${script}" --selftest`, { stdio: ['ignore', 'ignore', 'ignore'] });
+      execSync(`"${runner}" "${script}" --selftest`, { stdio: ['ignore', 'pipe', 'pipe'], timeout: 600000 });
       ok(`selftest passed: ${rel}`);
     } catch (e) {
-      fail(`selftest FAILED: ${rel} (\`${runner} ${rel} --selftest\` exited non-zero)`);
+      const text = `${e.stdout || ''}${e.stderr || ''}`;
+      const lines = text.split('\n').filter((l) => /FAIL|ERROR|WSL|not found/.test(l)).slice(0, 10).join('\n') || text.slice(-600);
+      fail(`selftest FAILED: ${rel} (runner: ${runner}${e.signal ? `, killed by ${e.signal}` : ''})\n${lines}`);
     }
   }
 }
 
+// --strict, Codex-backed skills: the installed CLI must accept every flag codex-run.sh passes
+// (the selftest only exercises a fake codex).
+function checkCodexFlags() {
+  if (!PREREQUISITES.some((p) => p.label === 'Codex CLI')) return;
+  let help = '';
+  try {
+    help = execSync('codex exec --help', { stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 }).toString();
+  } catch (e) {
+    fail('`codex exec --help` failed: cannot confirm the flags codex-run.sh needs');
+  }
+  const need = ['--config', '--sandbox', '--model', '--output-last-message', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox'];
+  const missing = need.filter((f) => !help.includes(f));
+  if (missing.length) fail(`installed Codex CLI lacks ${missing.join(', ')} (codex-run.sh passes them)`);
+  ok(`Codex CLI accepts ${need.length} flags codex-run.sh passes`);
+}
 function checkPrereqs() {
   for (const p of PREREQUISITES) {
     try {
@@ -125,6 +158,6 @@ function checkPrereqs() {
 const strict = process.argv.includes('--strict');
 checkRequired();
 checkNoCrossRefs();
-if (strict) { checkScripts(); checkPrereqs(); }
+if (strict) { checkScripts(); checkPrereqs(); checkCodexFlags(); }
 process.stdout.write(`[verify-independence:${SELF_NAME}] PASS — skill is self-contained\n`);
 process.exit(0);

@@ -65,7 +65,7 @@ Codex는 **read-only 샌드박스**로 돈다(읽기만, 쓰기·네트워크 �
 
 ## Pass 1 — Codex 호출 (렌즈당 Bash 1개)
 
-**Codex는 `codex-run.sh`로만 부른다** — 호출 템플릿을 손으로 쓰지 않는다. Sandbox Safety Preamble·tempfile+stdin·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message`·`[fallback: not-started]` 선생성·`parse-findings.js` 추출을 스크립트가 강제한다. 렌즈당 별도 Bash 호출(한 Bash 안에서 5개 순차 금지 — hang 시 뒷 렌즈 유실), Bash tool `timeout`은 330000 이상. Codex CLI는 한 번에 1콜이 안정적이므로 Bash들을 순차로 발사. Wall time ≈ 5 × (15~40s) = **~100~200s**.
+**Codex는 `codex-run.sh`로만 부른다** — 호출 템플릿을 손으로 쓰지 않는다. Sandbox Safety Preamble·tempfile+stdin·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message`·`[fallback: not-started]` 선생성·`parse-findings.js` 추출을 스크립트가 강제한다. 렌즈당 별도 Bash 호출(한 Bash 안에서 5개 순차 금지 — hang 시 뒷 렌즈 유실), Bash tool `timeout` = (`PRISM_CODEX_TIMEOUT`(기본 300) + 30) × 1000 ms, 최대 600000 (그래서 `PRISM_CODEX_TIMEOUT` ≤ 570). Codex CLI는 한 번에 1콜이 안정적이므로 Bash들을 순차로 발사. Wall time ≈ 5 × (15~40s) = **~100~200s**.
 
 ```bash
 # 런당 1회, 출력된 경로를 이후 호출에 그대로 쓴다. --artifacts docs는 .gitignore에 없으면 거부된다.
@@ -76,7 +76,7 @@ bash "<skill dir>/codex-run.sh" discovery <run-dir> <angle> --target <file> [--t
 EOF
 ```
 
-`<angle>`: `correctness|security|state|integration|testability|redteam|improvement` (design: `conflict|claim-accuracy|devil|robustness|improvement`). 스크립트의 조립 순서: Preamble → ① target 전문(모든 렌즈 동일 → 공통 prefix) → ② 체크리스트(`security`·`redteam`만, 다른 angle이면 버린다) → ③ 렌즈 정의 → ④ 출력 계약. stdout = 요약 1줄(`status=ok|degraded(<사유>)|secret-scrubbed findings=N`) + 파서 JSON. 실패한 렌즈도 exit 0 + `degraded:true`, exit 2는 인자 오류뿐. 사유별 처리는 `references/codex-invocation.md` §Fallback policy.
+`<angle>`: `correctness|security|state|integration|testability|redteam|improvement` (design: `conflict|claim-accuracy|devil|robustness|improvement`). 스크립트의 조립 순서: Preamble → ① target 전문(모든 렌즈 동일 → 공통 prefix) → ② 체크리스트(`security`·`redteam`만, 다른 angle이면 버린다) → ③ 렌즈 정의 → ④ 출력 계약. stdout = 요약 1줄(`status=ok|degraded(<사유>)|secret-scrubbed findings=N`) + 파서 JSON. 실패한 렌즈도 exit 0 + `degraded:true` — 라운드는 계속된다. exit 2 = 인자·설정·설치 오류 또는 같은 angle이 아직 실행 중(고친 뒤 다시 실행, 다른 모델로 재시도하지 않는다). exit 130 = 중단(마커와 DEGRADED JSON은 남는다). 재시도는 `timeout`·`codex-unavailable`·`no-last-message`만 1회. `codex-output-contained-secret-pattern`·`prompt-modified-during-run`·`scan-failed`는 보안 사건 — 자동 재시도 금지, 사용자에게 알린다(다음 실행 때 이전 마커는 `*.incident.*`로 보존된다). 사유별 처리는 `references/codex-invocation.md` §Fallback policy.
 
 공통 계약: **"너는 의심을 생산한다 — 확정은 Evidence pass의 일. LOCUS는 `file:lines@symbol`, `|` 금지."**
 
