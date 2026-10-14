@@ -5,6 +5,35 @@ All notable changes to the Prism plugin are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-13
+
+Correction release. 0.3.0 made prism refuse documents and deprecated the classic lens set; that
+broke `/ddaro:review`, whose design-review gate runs prism's design angles and triad's writing
+lenses together on the same design doc. The split is now by *question*, not by file type:
+prism asks "is it sound?" (code: defect lenses, documents: design lenses), triad asks "is the
+document well written?".
+
+### Changed
+- **Documents are reviewed again**, with the **design lens set** selected automatically for
+  markdown/design/plan targets (`--lenses=design` forces it; `--lenses=classic` stays as an alias).
+  No deprecation, no refusal.
+- The set is the old classic set with one angle replaced: **Code Review → Claim Accuracy**. Code
+  Review's "ambiguous instructions / actionability" checks duplicated triad's LLM-clarity lens;
+  Claim Accuracy instead verifies every statement the doc makes about the current system
+  (`file:line` refs, "X already does Y", reuse-inventory rows) against the repository. Conflict
+  Detection became **Conflict & Reuse** (name the existing capability so it can be reused).
+- Design-target confidence: document-only quotes stay capped at MEDIUM; findings that quote
+  repository code are graded like code findings (the machine quote-check covers them).
+- **Codex calls pin `model_reasoning_effort=high` and a 300 s timeout** (was: config.toml default
+  effort, 180 s). xhigh exhausts the Codex usage limit within a few calls; measured on CLI 0.159.3
+  with a 24 KB prompt: high 44 s, xhigh 113 s, max 227 s. Override per run with
+  `PRISM_CODEX_EFFORT` / `PRISM_CODEX_TIMEOUT`. Ported from the unreleased `feat/codex-effort`
+  work into the 0.3.0 layout (`references/codex-invocation.md`).
+
+### Renamed
+- `references/classic-lenses.md` → `references/design-lenses.md` (sync script and
+  `verify-independence.js` updated).
+
 ## [0.3.0] - 2026-10-13
 
 Consolidation release. Prism becomes a **code-only** reviewer, absorbs `prism-devil`, and sheds

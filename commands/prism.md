@@ -1,7 +1,7 @@
 ---
 name: prism
 description: "Evidence-graded multi-angle code review - 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path. SUSPECTED → SUPPORTED → REPRODUCED; agreement prioritizes, evidence confirms. --redteam adds an attacker-mindset lens."
-argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--include-improvements] [--format json]"
+argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--include-improvements] [--lenses=design] [--format json]"
 allowed-tools:
   - Read
   - Glob
@@ -12,7 +12,7 @@ allowed-tools:
 
 # /prism Command
 
-Run a multi-angle review across 5 defect-focused lenses in parallel, then ground every candidate in actual code (file, lines, execution path) before anything is reported as confirmed. Nothing is confirmed by agreement alone. **Code only** — documents, plans and specs go to `/triad`.
+Run a multi-angle review across 5 defect-focused lenses in parallel, then ground every candidate in actual code (file, lines, execution path) before anything is reported as confirmed. Nothing is confirmed by agreement alone. Code gets the defect lenses; design docs, plans and specs get the design lenses (is the design sound?). For how a document *reads*, use `/triad`.
 
 ## Parse Arguments
 
@@ -26,10 +26,10 @@ Run a multi-angle review across 5 defect-focused lenses in parallel, then ground
 | `--diff [base...head]` | Review the change, not the file: "what regression does this diff newly introduce?" Preferred for PR review. |
 | `<target> --include-improvements` | Adds the Improvement lens (suggestions labeled separately). |
 | `<target> --format json` | Also emit machine-readable `prism-report.json` (finding records v2). |
-| `<target> --lenses=classic` | Deprecated (removal in 0.4). Original 0.1 lens set, explicit only. |
+| `<target> --lenses=design` | Force the design lens set (automatic for markdown targets). `classic` is an alias. |
 | `(no argument)` | Review the current project's code. |
 
-`<target>` may be a file path, a topic/feature name, or `.` for the current project. A markdown/design target is refused with a pointer to `/triad`.
+`<target>` may be a file path, a topic/feature name, or `.` for the current project. A markdown/design target gets the design lens set automatically.
 
 ## Execution
 
@@ -46,11 +46,12 @@ The full contract lives in the `prism` skill at `skills/prism/SKILL.md`. Read th
 | You're rushing | `--quick` (everything SUSPECTED) |
 | You suspect you'll dismiss real issues | `--adversarial` |
 | Cross-model confidence | `/prism-all` (Claude + Codex) |
-| Markdown / spec / plan | `/triad <file>` (not prism) |
+| Is this design doc sound? | `/prism <doc>` (design lenses) |
+| Does this doc read well? | `/triad <doc>` |
 
 ## Companion commands
 
 - `/prism-all <target>` - dual-engine (Claude + Codex) evidence-graded review
 - `/prism-codex <target>` - Codex-only engine (saves Claude tokens)
 - `/mangchi <file>` - iterative cross-model file hardening (after prism finds weak files)
-- `/triad <file>` - 3-perspective deliberation for markdown/specs (not code)
+- `/triad <file>` - document writing quality (LLM clarity / longevity / comprehension); pair with `/prism <doc>` for design soundness, or run both via `/ddaro:review`

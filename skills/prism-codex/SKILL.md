@@ -1,7 +1,7 @@
 ---
 name: prism-codex
-description: Codex-backed evidence-graded code review. Like prism but the 5 discovery agents + Evidence pass are all Codex CLI (gpt-5.5). Statuses SUSPECTED → SUPPORTED → REPRODUCED; agreement prioritizes, evidence confirms. --redteam adds an attacker-mindset lens. Code only; documents go to /triad. Use when you want different-model opinions or Claude tokens are scarce. Triggers on "/prism-codex <target>", "prism codex로", "codex prism".
-argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--redteam] [--include-improvements] [--format json] [--artifacts=temp|docs]"
+description: Codex-backed evidence-graded code review. Like prism but the 5 discovery agents + Evidence pass are all Codex CLI (gpt-5.5). Statuses SUSPECTED → SUPPORTED → REPRODUCED; agreement prioritizes, evidence confirms. --redteam adds an attacker-mindset lens. Design docs get the design lens set (pair with /triad for writing quality). Use when you want different-model opinions or Claude tokens are scarce. Triggers on "/prism-codex <target>", "prism codex로", "codex prism".
+argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--redteam] [--include-improvements] [--lenses=design] [--format json] [--artifacts=temp|docs]"
 user-invocable: true
 ---
 
@@ -12,7 +12,7 @@ user-invocable: true
 이 skill 디렉토리의 파일: `parse-findings.js`, `verify-evidence.js`(결정론 스크립트),
 `references/codex-invocation.md`(Codex 호출 계약 — preamble·템플릿·scrub·fallback·사건 기록),
 `references/record-v2.md`(finding 스키마 + confidence 표), `references/redteam-lens.md`,
-`references/classic-lenses.md`(deprecated). 참조 파일은 아래 단계가 지시할 때만 읽는다.
+`references/design-lenses.md`(문서용 design 렌즈셋). 참조 파일은 아래 단계가 지시할 때만 읽는다.
 
 ## 핵심 가치
 
@@ -20,7 +20,7 @@ user-invocable: true
 
 ⚠️ **단일 모델 ensemble의 한계**: 5 agents가 전부 같은 모델이므로 **합의(2+)는 확정이 아니라 우선순위 신호**. 합의만으로 confidence MEDIUM 상한; SUPPORTED 이상은 Evidence pass의 코드 접지(위치+실행경로+인용)가 필요. Evidence 사다리(SUSPECTED/SUPPORTED/REPRODUCED/REJECTED)와 record v2는 prism 가족 공통(`references/record-v2.md`).
 
-## 렌즈 (기본 DEFECT)
+## 렌즈 (코드 대상 기본 DEFECT)
 
 | Lens | 역할 |
 |---|---|
@@ -32,8 +32,7 @@ user-invocable: true
 
 - `--redteam` → 6번째 **Red Team** 렌즈. 프롬프트 `references/redteam-lens.md`. ATTACK CHAINS·CHECKLIST COVERAGE 섹션 추가.
 - `--include-improvements` → **Improvement** 렌즈 추가(분리 집계).
-- `--lenses=classic` → **deprecated(0.4 제거)**, 명시할 때만. `references/classic-lenses.md`.
-- **비코드 대상은 거부**: `prism은 코드 리뷰어 — 문서는 /triad <file>` 출력 후 중단(명시적 classic만 예외).
+- **문서·설계·계획 대상은 DESIGN 렌즈셋 자동** (`--lenses=design`으로 강제, `classic`은 별칭): Conflict & Reuse / Claim Accuracy / Devil's Advocate / Robustness 4축 / Improvement. 프롬프트는 `references/design-lenses.md`. prism은 "설계가 맞는가", `/triad`는 "문서로서 잘 쓰였는가" — `/ddaro:review`가 둘 다 돌린다. 헤더에 `Lenses: defect|design (auto|explicit)` 표기.
 - **프로젝트 보안 체크리스트**: Pass 1 전에 `docs/security-checklist.md` → `docs/security/checklist.md` → `SECURITY.md` → `docs/SECURITY.md` 첫 파일(≤3 tool call) → **Security·Red Team 렌즈에만** 전달.
 
 ## 전제 (Prerequisite)
@@ -50,6 +49,7 @@ user-invocable: true
 | `--reproduce` | + 재현 pass(SUPPORTED CRIT/HIGH 우선, 최대 5건, prism 공통 규약) |
 | `--redteam` | + Red Team 렌즈 |
 | `--include-improvements` | Improvement 렌즈 추가 |
+| `--lenses=design` | DESIGN 렌즈셋 강제 (markdown 대상은 자동, `classic`은 별칭) |
 | `--format json` | record v2를 `prism-report.json`으로도 출력 |
 | `--artifacts=temp` (기본) / `docs` | 산출물 위치(`docs`는 .gitignore 필수) |
 | 자연어 | "prism codex로", "codex prism", "prism-codex 돌려" |
@@ -62,7 +62,7 @@ user-invocable: true
 
 ## Pass 1 — Codex 호출 (렌즈당 Bash 1개)
 
-**첫 Codex 호출 전에 `references/codex-invocation.md`를 읽고 그 템플릿을 그대로 쓴다** (Sandbox Safety Preamble prepend·tempfile+stdin·180K 가드·180s timeout·secret scrub·`--output-last-message`·`parse-findings.js` 추출). 렌즈당 별도 Bash 호출(한 Bash 안에서 5개 순차 금지 — hang 시 뒷 렌즈 유실). Codex CLI는 한 번에 1콜이 안정적이므로 Bash들을 순차로 발사. Wall time ≈ 5 × (15~40s) = **~100~200s**.
+**첫 Codex 호출 전에 `references/codex-invocation.md`를 읽고 그 템플릿을 그대로 쓴다** (Sandbox Safety Preamble prepend·tempfile+stdin·180K 가드·300s timeout·effort high·secret scrub·`--output-last-message`·`parse-findings.js` 추출). 렌즈당 별도 Bash 호출(한 Bash 안에서 5개 순차 금지 — hang 시 뒷 렌즈 유실). Codex CLI는 한 번에 1콜이 안정적이므로 Bash들을 순차로 발사. Wall time ≈ 5 × (15~40s) = **~100~200s**.
 
 **프롬프트 조립 순서**: Preamble → ① target 전문(모든 렌즈 동일 → 공통 prefix) → ② 렌즈별 컨텍스트(Security/Red Team만 체크리스트) → ③ 렌즈 정의 + 출력 계약(마지막).
 
@@ -118,7 +118,7 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 
 ```
 PRISM-CODEX REPORT — {target} — {timestamp}
-Mode: {default | quick | adversarial} [+reproduce] [+redteam] · Lenses: defect {+redteam} | classic (deprecated)
+Mode: {default | quick | adversarial} [+reproduce] [+redteam] · Lenses: defect | design {+redteam} ({auto|explicit})
 Engine: Codex CLI (gpt-5.5) {n}/5 · Checklist: {path | none}
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
@@ -159,7 +159,7 @@ node verify-independence.js --strict
 | `/prism-codex` (이 skill) | Codex 5 + Codex Evidence | 다른 모델 / Claude 토큰 절약 |
 | `/prism-all` | Claude 5 + Codex 5 + Evidence | 최고 신뢰 |
 
-완전 독립 plugin. 정본은 prism-all, 사본은 `sync-review-parsers.sh`. 문서는 `/triad`, 반복 수정은 `/mangchi`, 구 `prism-devil`은 `--redteam`.
+완전 독립 plugin. 정본은 prism-all, 사본은 `sync-review-parsers.sh`. 문서의 글 품질은 `/triad`(설계 건전성은 이 skill의 design 렌즈), 반복 수정은 `/mangchi`, 구 `prism-devil`은 `--redteam`.
 
 ## 안티패턴
 
@@ -169,5 +169,5 @@ node verify-independence.js --strict
 - ❌ Evidence pass를 후보당 1콜로 — 파일 단위 ≤8 청킹
 - ❌ 재현 테스트를 프로젝트 트리에 / env 안 스트립 / 러너 설치
 - ❌ argv로 프롬프트 / SANDBOX SAFETY PREAMBLE 누락 / scrub 건너뜀 (`references/codex-invocation.md`)
-- ❌ 문서를 prism으로 — `/triad`
+- ❌ 문서의 글 품질(명확성·온보딩)을 prism에 기대함 — 그건 `/triad`. design 렌즈는 설계 건전성만 본다
 - ❌ 다른 plugin/skill 파일 런타임 참조

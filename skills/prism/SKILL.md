@@ -1,7 +1,7 @@
 ---
 name: prism
-description: Evidence-graded multi-angle code review — 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path before anything is confirmed. Statuses SUSPECTED → SUPPORTED → REPRODUCED. Agreement is a prioritization signal, not a verdict. --redteam adds an attacker-mindset lens (absorbed prism-devil). Code only; documents go to /triad. Use when user says "prism", "prism 돌려", "prism <file>", "full review", "red team", "what could break".
-argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--include-improvements] [--format json]"
+description: Evidence-graded multi-angle code review — 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path before anything is confirmed. Statuses SUSPECTED → SUPPORTED → REPRODUCED. Agreement is a prioritization signal, not a verdict. --redteam adds an attacker-mindset lens (absorbed prism-devil). Design docs get the design lens set (pair with /triad for writing quality). Use when user says "prism", "prism 돌려", "prism <file>", "full review", "red team", "what could break".
+argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--include-improvements] [--lenses=design] [--format json]"
 context: fork
 user-invocable: true
 ---
@@ -15,7 +15,7 @@ user-invocable: true
 
 Files in this skill dir: `parse-findings.js`, `verify-evidence.js` (deterministic, load-bearing),
 `references/record-v2.md` (finding schema + confidence table), `references/redteam-lens.md`,
-`references/classic-lenses.md` (deprecated). Read a reference only when the step below says so.
+`references/design-lenses.md` (lens set for design docs). Read a reference only when the step below says so.
 
 ## The evidence ladder
 
@@ -43,16 +43,19 @@ Files in this skill dir: `parse-findings.js`, `verify-evidence.js` (deterministi
 | `--diff [base...head]` | Review **the change**, not the file. |
 | `--include-improvements` | Adds the Improvement lens (labeled separately, excluded from defect counts). |
 | `--format json` | Also emit `prism-report.json` (finding records v2). |
-| `--lenses=classic` | **Deprecated (removal in 0.4).** Original 0.1 lens set, explicit only. Prints a warning. |
+| `--lenses=design` | Design lens set for docs/plans/specs (automatic when the target is mostly markdown). `classic` is accepted as an alias. See `references/design-lenses.md`. |
 
 ## Target resolution
 
 - File path → review that file. Topic → locate and review relevant files. No argument → current
   project. **Always read the full target first** and pass it verbatim to each agent. No summarization.
-- **Prism reviews code.** If the majority of target bytes are markdown/design/plan text (or, in
-  `--diff` mode, no hunk touches a code file), **stop** and print:
-  `prism is a code reviewer — for documents, plans and specs run /triad <file>.`
-  Only an explicit `--lenses=classic` overrides this (deprecated path, header shows `Lenses: classic (deprecated)`).
+- **Lens set by target type.** Code (majority of target bytes are source files, or in `--diff`
+  mode any hunk touches a code file) → DEFECT set. Markdown/design/plan text → **DESIGN set**
+  (`references/design-lenses.md`): conflict & reuse, claim accuracy against the repo, devil's
+  advocate, robustness of the designed system, improvement. The header prints `Lenses: defect
+  (auto)` / `design (auto)` / `... (explicit)` so a silent flip between runs is visible. prism
+  answers "is the design sound?"; for "is the document well written?" pair it with `/triad`
+  (`/ddaro:review` runs both).
 - **Project security checklist**: before Pass 1, look for `docs/security-checklist.md` →
   `docs/security/checklist.md` → `SECURITY.md` → `docs/SECURITY.md` (first hit, ≤3 tool calls).
   If found, it is handed to the **Security** lens (and the Red Team lens under `--redteam`) only.
@@ -72,7 +75,7 @@ it is the only mode where the Integration lens sees real callers instead of gues
 
 ---
 
-## Lenses (DEFECT set — the default)
+## Lenses (DEFECT set — the default for code)
 
 1. **Correctness & Contracts** — wrong results, boundary values, error/exception paths, violated invariants, API contract breaks (return shapes, nullability, units, encoding).
 2. **Security & Trust Boundaries** — input validation, authn/authz, secrets handling, injection, data crossing trust boundaries, unsafe defaults. Receives the project checklist when one exists.
@@ -117,7 +120,7 @@ Lens prompts:
 - **Testability & Observability**: "When this fails in production, will anyone know? Find swallowed exceptions, silent fallbacks, misleading logs, untestable seams, failure modes with no signal. For each: how the failure would (not) surface."
 - **Red Team** (`--redteam`): full prompt in `references/redteam-lens.md`.
 - **Improvement** (`--include-improvements`): "Suggest concrete enhancements. For each: current state → proposed improvement → rationale."
-- Classic set (`--lenses=classic`, deprecated): `references/classic-lenses.md`.
+- **Design set** (documents; automatic, or `--lenses=design`): `references/design-lenses.md`.
 
 ---
 
@@ -217,7 +220,7 @@ Every record carries `reproduction.status`; `STATIC_EVIDENCE_ONLY` / `NOT_RUN` a
 ```
 PRISM REPORT — {target} — {timestamp}
 Mode: {default | quick | adversarial} [+reproduce] [+redteam] [diff <range>]
-Lenses: defect {+redteam} {+improvements} | classic (deprecated)
+Lenses: defect | design {+redteam} {+improvements} ({auto|explicit})
 Checklist: {path | none}
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
@@ -292,5 +295,5 @@ by scripts, never by the model.
 
 - **prism-all** / **prism-codex** — ship in this plugin: Codex engine for cross-model agreement (same ladder, same records).
 - **mangchi** — after prism identifies weak files, iteratively harden them (prism finds, mangchi fixes). Separate plugin.
-- **triad** — 3-perspective deliberation for markdown/specs/plans. Documents go there, not here. Separate plugin.
+- **triad** — document *writing* quality (LLM clarity / longevity / comprehension) for markdown/specs/plans. On a design doc prism checks soundness and triad checks the writing; `/ddaro:review` runs both. Separate plugin.
 - **prism-devil** — retired; absorbed as `--redteam` (0.3.0).

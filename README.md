@@ -54,7 +54,8 @@ You ask Claude "review this file". It says "looks good". You ship it. Two weeks 
 | Cross-check with a second model (Claude + Codex) | `/prism-all` (ships in this plugin) |
 | Security / attacker-mindset deep probe | `/prism <target> --redteam` (prism-devil was absorbed in 0.3.0) |
 | Actually fix a file, iteratively | [mangchi](https://github.com/minwoo-data/mangchi) |
-| Review markdown / designs / specs | [triad](https://github.com/minwoo-data/triad) — prism refuses document targets |
+| Check a design doc is sound (conflicts, claims vs code, failure modes) | `/prism <doc>` (design lens set, automatic for markdown) |
+| Review how a doc reads (LLM clarity / longevity / comprehension) | [triad](https://github.com/minwoo-data/triad) |
 | Parallel worktree sessions with safe merge | [ddaro](https://github.com/minwoo-data/ddaro) |
 
 ---
@@ -115,8 +116,10 @@ All three ship inside one plugin install. Pick one per run. Codex CLI prerequisi
 Optional lenses: **Red Team** (`--redteam`) — the hostile attacker-mindset probe inherited from
 `prism-devil`, with project security-checklist cross-reference and attack-chain detection; its
 findings go through the same Evidence pass. **Improvement** (`--include-improvements`) — kept out
-of the default so defect reports stay quiet. `--lenses=classic` (the 0.1 set) is deprecated and
-explicit-only; **prism is code-only** — documents and plans are refused with a pointer to `/triad`.
+of the default so defect reports stay quiet. **Design docs, plans and specs** get the **design lens
+set** instead (conflict & reuse / claim accuracy against the repo / devil's advocate / robustness of
+the designed system / improvement): prism answers "is the design sound?", triad answers "is the
+document well written?", and `/ddaro:review` runs both.
 
 Prompts are assembled **target first, lens last**, so the shared prefix is prompt-cache friendly.
 
@@ -161,6 +164,7 @@ Every finding ships as a structured **record v2** — `id`, stable `fingerprint`
 /prism src/services/auth.py --adversarial   # Evidence pass argues against its own REJECTs
 /prism src/services/auth.py --redteam       # + attacker-mindset lens, checklist, attack chains
 /prism --diff main...HEAD                   # change-scoped review (preferred for PRs)
+/prism docs/design/billing.md               # design doc → design lens set (auto)
 /prism .                                    # whole-project review
 ```
 
@@ -302,7 +306,7 @@ The base `/prism` runs entirely within Claude Code. No external CLI required.
 
 - **Tiny one-line changes** — overkill
 - **Iterative file hardening** — use `/mangchi` (better tool for that loop)
-- **Documents** — prism refuses them; `/triad` is the right tool (the deprecated `--lenses=classic` path goes away in 0.4)
+- **Polishing how a document reads** — that is `/triad`; prism's design lenses check whether the design is sound, not the prose
 
 ## Philosophy
 
