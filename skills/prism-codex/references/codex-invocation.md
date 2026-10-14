@@ -17,6 +17,7 @@ does and what to do when an angle degrades. You do not need to read it to run a 
 | 6 | Sandbox Safety Preamble is the first bytes of every prompt | `codex-run.sh` `preamble()` (the only copy of the text) |
 | 7 | Secret scrub over everything Codex printed, before anything is copied, including the stderr tail of a failed call | `codex-run.sh` `secret_patterns()`; `codex-run.sh scrub <file>` for reproduction logs |
 | 8 | Only the `--output-last-message` answer is parsed | `codex-run.sh` (no last message → degraded) |
+| 9 | Codex commands run in the read-only sandbox (no writes, no network); bypass only by explicit `PRISM_CODEX_SANDBOX=bypass` | `codex-run.sh` (selftest: sandbox cases) |
 
 Why effort is pinned: xhigh exhausts the Codex usage limit within a few calls. Measured on CLI
 0.159.3 with a 24 KB prompt: high 44 s, xhigh 113 s, max 227 s. 300 s leaves headroom to raise it.
@@ -69,10 +70,16 @@ wrapper itself would copy them into the prompt.
 - Do not run prism from a working directory that holds `.env`, `dotenv`, `*credentials*`,
   `*secret*` files Codex could read. The preamble forbids reading them; the script warns when the
   working directory holds them. This is defense in depth.
-- Codex runs with `--dangerously-bypass-approvals-and-sandbox`, so it has the operator's file and
-  network access. The preamble and the scrub reduce, not remove, what a misbehaving or
-  prompt-injected Codex can disclose. Review untrusted code from a directory and account that hold
-  nothing worth stealing.
+- Codex runs in the **read-only sandbox** (`-s read-only`): every command it runs can read files
+  but cannot write them or reach the network, so a prompt-injected Codex cannot exfiltrate over
+  the network, edit the repo, or rewrite its own prompt. It can still *read* secrets and print
+  them, which is what the preamble and the scrub are for. Measured on Windows (CLI 0.159.3, sandbox
+  `elevated`): same findings and speed as without the sandbox.
+- The sandbox cannot reach some locations, e.g. a Google Drive mount (`H:` on Windows returns
+  "access denied"). Pass such files as `--target`/`--checklist` (the wrapper reads them, outside
+  the sandbox), or, for one run, `PRISM_CODEX_SANDBOX=bypass`. Bypass is never automatic: a
+  sandbox failure degrades the angle (`codex-unavailable` with the stderr tail) and the summary
+  line always prints `sandbox=read-only|bypass`.
 - `--artifacts=docs` writes target source and Codex output into the repo; `codex-run.sh init`
   refuses unless `docs/prism-codex/` is gitignored.
 - Codex model: `~/.codex/config.toml` default (`gpt-5.5` recommended). If calls fail on the model,

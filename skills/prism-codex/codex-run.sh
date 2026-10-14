@@ -27,6 +27,7 @@
 # Usage errors exit 2. Interrupted (INT/TERM/HUP): partial output destroyed, exit 130.
 #
 # Env: PRISM_CODEX_EFFORT (high), PRISM_CODEX_TIMEOUT (300), PRISM_CODEX_MODEL (optional -m),
+#      PRISM_CODEX_SANDBOX (read-only; bypass = no sandbox, explicit opt-out),
 #      PRISM_CODEX_BIN (codex; the selftest points it at a fake).
 #
 # SINGLE-SOURCED: canonical = prism-all/codex-run.sh; prism-codex gets a byte-identical copy from
@@ -307,6 +308,15 @@ cmd_run() {
   local bin="${PRISM_CODEX_BIN:-codex}" effort="${PRISM_CODEX_EFFORT:-high}" secs="${PRISM_CODEX_TIMEOUT:-300}"
   case "$effort" in ''|*[!a-z]*) die "PRISM_CODEX_EFFORT must be a lowercase word, got '$effort'" ;; esac
   case "$secs" in ''|*[!0-9]*|0) die "PRISM_CODEX_TIMEOUT must be whole seconds >= 1, got '$secs'" ;; esac
+  # Review only needs to read. read-only blocks writes and network for every command Codex runs;
+  # bypass is an explicit per-run opt-out (paths the sandbox cannot reach, no sandbox support).
+  local sandbox="${PRISM_CODEX_SANDBOX:-read-only}" sandbox_args
+  case "$sandbox" in
+    read-only) sandbox_args=(-s read-only) ;;
+    bypass)    sandbox_args=(--dangerously-bypass-approvals-and-sandbox)
+               warn "PRISM_CODEX_SANDBOX=bypass: Codex runs without a sandbox (full file and network access)" ;;
+    *) die "PRISM_CODEX_SANDBOX must be read-only or bypass, got '$sandbox'" ;;
+  esac
   [ -t 0 ] && die "the $kind prompt must come on stdin (quoted heredoc: <<'EOF')"
 
   local pass=1; [ "$kind" = evidence ] && pass=2
@@ -372,7 +382,7 @@ cmd_run() {
   fi
 
   if [ -z "$status" ]; then
-    local args=(exec -c "model_reasoning_effort=$effort" --dangerously-bypass-approvals-and-sandbox
+    local args=(exec -c "model_reasoning_effort=$effort" "${sandbox_args[@]}"
                 --skip-git-repo-check --output-last-message "$msg")
     [ -n "${PRISM_CODEX_MODEL:-}" ] && args+=(-m "$PRISM_CODEX_MODEL")
     local tcmd="" start=$SECONDS
@@ -461,10 +471,10 @@ cmd_run() {
     local counts
     counts="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
       process.stdout.write(`findings=${j.degraded ? 0 : (j.findings||[]).length} degraded=${!!j.degraded} skipped=${j.skipped||0}`)' "$out.json" 2>/dev/null)"
-    echo "[codex-run] $SKILL_NAME pass1 $angle: status=$status $counts seconds=$took out=$out"
+    echo "[codex-run] $SKILL_NAME pass1 $angle: status=$status $counts sandbox=$sandbox seconds=$took out=$out"
     cat "$out.json"; echo
   else
-    echo "[codex-run] $SKILL_NAME pass2 $angle: status=$status seconds=$took out=$out"
+    echo "[codex-run] $SKILL_NAME pass2 $angle: status=$status sandbox=$sandbox seconds=$took out=$out"
     cat "$out"; echo
   fi
   return 0
@@ -487,7 +497,7 @@ cmd_scrub() {
 }
 
 selftest() {
-  local fails=0 n=0 out rc D P O T t0
+  local fails=0 n=0 out out2 rc D P O T t0
   local SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
   ST_TMP="$(mktemp -d)" || die "mktemp failed"
   trap 'rm -rf "$ST_TMP"' EXIT
@@ -541,6 +551,11 @@ FAKE
   check "prompt reaches codex on stdin, byte-identical" 'cmp -s "$P" "$T/stdin"'
   check "prompt is not on argv" '[ -s "$T/args" ] && ! grep -q "LENS: correctness" "$T/args"'
   check "effort pinned high, repo check skipped, last message requested" 'grep -qx "model_reasoning_effort=high" "$T/args" && grep -qx -- "--skip-git-repo-check" "$T/args" && grep -qx -- "--output-last-message" "$T/args"'
+  check "read-only sandbox by default, never the bypass flag" 'grep -A1 -x -- "-s" "$T/args" | grep -qx "read-only" && ! grep -q -- "--dangerously-bypass" "$T/args" && printf "%s" "$out" | head -1 | grep -q "sandbox=read-only"'
+  out2="$(PRISM_CODEX_SANDBOX=bypass FAKE_MODE=ok run discovery "$D" bypass --target "$T/a.js" <<<'LENS' 2>/dev/null)"
+  check "PRISM_CODEX_SANDBOX=bypass: bypass flag, no -s, reported in the summary" 'grep -qx -- "--dangerously-bypass-approvals-and-sandbox" "$T/args" && ! grep -qx -- "-s" "$T/args" && printf "%s" "$out2" | head -1 | grep -q "sandbox=bypass"'
+  PRISM_CODEX_SANDBOX=off run discovery "$D" badsbx --target "$T/a.js" <<<'LENS' >/dev/null 2>&1; rc=$?
+  check "unknown PRISM_CODEX_SANDBOX value rejected (exit 2)" '[ $rc -eq 2 ]'
   check "order: preamble < target < lens < contract" '[ "$(line_of "^SANDBOX SAFETY" "$P")" -lt "$(line_of "^--- BEGIN TARGET" "$P")" ] && [ "$(line_of "^--- BEGIN TARGET" "$P")" -lt "$(line_of "^LENS: correctness" "$P")" ] && [ "$(line_of "^LENS: correctness" "$P")" -lt "$(line_of "^<<<PRISM-FINDINGS v1>>>" "$P")" ]'
   check "last message used, raw stream and scratch files removed" 'grep -q "off by one" "$O" && ! grep -q "session noise" "$O" && [ -z "$(ls "$D" | grep -E "\.(raw|msg|in|json)\.[0-9]+$")" ]'
   check "findings parsed to json" 'grep -q "\"degraded\":false" "$O.json" && grep -q "off by one" "$O.json"'

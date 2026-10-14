@@ -40,6 +40,8 @@ user-invocable: true
 
 **Codex CLI ≥ 0.125.0** 필수 (`codex --version`). 부적합 시 중단 + `npm install -g @openai/codex@latest` 안내. Claude로 자동 대체하지 않음(이 skill의 존재 이유가 다른 모델). 모델·폴백: `references/codex-invocation.md` §Operator rules.
 
+Codex는 **read-only 샌드박스**로 돈다(읽기만, 쓰기·네트워크 차단). 샌드박스가 못 읽는 경로(예: Google Drive `H:`)의 파일은 `--target`/`--checklist`로 넘긴다. 샌드박스 없이 돌리기는 사용자가 요청할 때만 `PRISM_CODEX_SANDBOX=bypass`.
+
 ## 트리거
 
 | 형태 | 모드 |

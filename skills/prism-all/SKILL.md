@@ -54,6 +54,8 @@ State, Concurrency & Recovery / Integration & Regression / Testability & Observa
 
 **Codex 없음** → `/prism` 전환 제시. 반만 돌지 않는다 (skill 이름에 반함). 모델 선택·폴백은 `references/codex-invocation.md` §Operator rules.
 
+Codex는 **read-only 샌드박스**로 돈다(읽기만, 쓰기·네트워크 차단). 샌드박스가 못 읽는 경로(예: Google Drive `H:`)의 파일은 `--target`/`--checklist`로 넘긴다. 샌드박스 없이 돌리기는 사용자가 요청할 때만 `PRISM_CODEX_SANDBOX=bypass`.
+
 ## 트리거
 
 | 형태 | 모드 |
