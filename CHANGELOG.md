@@ -21,7 +21,7 @@ so prism's behavior does not change.
     counts only if the quote is really at those lines, in a file under the repo root or a
     `--context` file. Quotes span at most 40 lines and are at least 8 characters; network paths,
     credential files (the `codex-run.sh` globs, on the real path), `.git` internals and
-    secret-shaped quotes are refused (code that only names a secret is fine). A quote is matched
+    secret-shaped quotes are refused (an unquoted value only names a secret and is fine). A quote is matched
     against every file its path can mean, so a repo file and a same-named `--context` file never
     shadow each other. No valid ground means `UNGROUNDED`, and a failed ground's text is never kept.
   - Idea keys are `<engine>-<n>-<hash>`, so a verdict or group from another gate run cannot land on
@@ -34,7 +34,7 @@ so prism's behavior does not change.
   - `rank` sets `cross_model` only from explicit groups, orders ideas by content alone, and reports
     degraded proposers and checkers in `meta`.
   - Unreadable inputs, a findings file of the wrong shape and a missing `verify-evidence.js` exit 2.
-  - `--selftest` (90 cases; all 45 deliberate code and contract breaks tried are caught).
+  - `--selftest` (99 cases; all 50 deliberate code and contract breaks tried are caught).
 - **`templates/ideas-contract.md`** and **`templates/idea-check-contract.md`**: the two output
   formats, each in one file that is appended verbatim and last to every prompt that needs it.
   The selftest fails if a contract stops naming a field, value or limit the script enforces.

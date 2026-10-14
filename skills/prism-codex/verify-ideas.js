@@ -108,9 +108,9 @@ const CREDENTIAL_RE = globRe(CREDENTIAL_GLOBS);
 const NOT_CREDENTIAL_RE = globRe(NOT_CREDENTIAL_GLOBS);
 
 const URL_RE = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]{6,}@/g;
-const KV_RE = /[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*["']?\s*[:=]\s*["']?[A-Za-z0-9_@#%^&*!.+/=~$-]{8,}/g;
-// A KEY=value whose value is code (an environment lookup, a config read, a call) is not a secret.
-const CODE_VALUE = /^(?:process\.env|os\.environ|os\.getenv|getenv|System\.getenv|ENV\[|env\.|config\.|settings\.|self\.|this\.)/i;
+// KEY = "literal": the value must be a quoted literal. An unquoted value is code (an environment
+// lookup, a call, a constant) and names a secret without holding one.
+const KV_RE = /[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*["']?\s*[:=]\s*["'][A-Za-z0-9_@#%^&*!.+/=~$-]{8,}/g;
 const LOCAL_HOST = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/i;
 // The shapes codex-run.sh secret_patterns() quarantines, plus HTTP auth headers. A quote that looks
 // like a secret is never a ground: it would be copied into the report and the other engine's prompt.
@@ -159,14 +159,21 @@ function jsonLines(lines) {
   return { objs, bad, overflow, empty: nonEmpty === 0 };
 }
 
-// The answer is the last closed fence. Only a fence whose every line still carries the contract's
-// `"<...>"` placeholders (an echoed example) is skipped; a draft or planted fence earlier in the
-// output never wins, even when the last fence turns out invalid. -> index or -1
-const ECHO_LINE = /"<[^"<>]+>"/;
-function answerIndex(blocks) {
+// The answer is the last closed fence. Only an echoed contract example is skipped: a fence whose
+// every line is JSON whose identifying field still holds the template placeholder (`lens` for an
+// idea, `key` or `verdict` for a verdict). A draft or planted fence earlier in the output never
+// wins, even when the last fence turns out invalid. -> index or -1
+const echoOf = (fields) => (line) => {
+  let o = null;
+  try { o = JSON.parse(line); } catch (_) { return false; }
+  return !!o && typeof o === 'object' && fields.some((f) => typeof o[f] === 'string' && isPlaceholder(o[f]));
+};
+const IDEA_ECHO = echoOf(['lens']);
+const CHECK_ECHO = echoOf(['key', 'verdict']);
+function answerIndex(blocks, isEcho) {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const lines = blocks[i].map((l) => l.trim()).filter(Boolean);
-    if (lines.length && lines.every((l) => ECHO_LINE.test(l))) continue;
+    if (lines.length && lines.every(isEcho)) continue;
     return i;
   }
   return -1;
@@ -213,6 +220,7 @@ function validateIdea(o) {
 // the JS version works: then the JS result is used, unless it still holds a short-name component.
 // (An object so the selftest can count calls.)
 const FS_REAL = { native: fs.realpathSync.native || null, js: fs.realpathSync };
+const SHORT_NAME = /^[^.~]{1,6}~\d+(?:\.[^.]{0,3})?$/i;   // an 8.3 short name such as ENV~1 or PROGRA~1
 function samePath(a, b) {
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
@@ -224,7 +232,7 @@ function realOr(p) {
   if (FS_REAL.native) { try { return FS_REAL.native(p); } catch (_) { /* fall through */ } }
   try {
     const r = FS_REAL.js(p);
-    return FS_REAL.native && r.split(/[\\/]/).some((seg) => /~\d/.test(seg)) ? null : r;
+    return FS_REAL.native && process.platform === 'win32' && r.split(/[\\/]/).some((seg) => SHORT_NAME.test(seg)) ? null : r;
   } catch (_) { return null; }
 }
 
@@ -273,8 +281,9 @@ function isCredential(p) {
   return !NOT_CREDENTIAL_RE.test(b) && CREDENTIAL_RE.test(b);
 }
 
-// True when a quote holds something secret-shaped. Code that only names a secret (an env lookup, a
-// call, a local test DSN whose user and password are the same word) is not a secret.
+// True when a text holds something secret-shaped: a known token format, credentials in a URL, or a
+// secret-named key with a quoted literal value. Code that only names a secret is not a secret, and
+// neither is a local test DSN whose user and password are the same word.
 function looksSecret(s) {
   for (const re of SECRET_RES) {
     re.lastIndex = 0;
@@ -282,14 +291,10 @@ function looksSecret(s) {
     while ((m = re.exec(s)) !== null) {
       if (m[0].length === 0) { re.lastIndex++; continue; }
       if (SECRET_PLACEHOLDER.test(m[0])) continue;
-      if (re === KV_RE) {
-        const value = m[0].replace(/^[^:=]*[:=]\s*["']?/, '');
-        if (CODE_VALUE.test(value) || s[re.lastIndex] === '(') continue;
-      }
       if (re === URL_RE) {
         const host = (s.slice(re.lastIndex).match(/^[^/:\s?#]*/) || [''])[0];
         const up = m[0].match(/:\/\/([^/\s:@]+):([^/\s:@]+)@$/);
-        if (LOCAL_HOST.test(host) || (up && up[1] === up[2])) continue;
+        if (LOCAL_HOST.test(host) && up && up[1] === up[2]) continue;
       }
       return true;
     }
@@ -324,7 +329,7 @@ function verifyQuote(raw, env) {
   if (looksSecret(quote)) return fail('SECRET_IN_QUOTE');
   const res = resolveGroundPath(p, env);
   if (!res.ok) return fail(res.reason);
-  let first = null;
+  let first = null, repoWhy = null;
   for (const c of res.cands) {
     const why = (() => {
       if (isCredential(c.real)) return 'CREDENTIAL_FILE';
@@ -339,14 +344,14 @@ function verifyQuote(raw, env) {
     })();
     if (typeof why === 'string') {
       if (why === 'CREDENTIAL_FILE') return fail(why);   // never fall through past a credential file
-      first = first || why;
+      if (!c.context) repoWhy = why; else first = first || why;
       continue;
     }
     const out = { ok: true, ref, file: p, lines: `${range[0]}-${range[1]}`, matched_lines: `${why.from}-${why.to}` };
     if (c.context) out.context = c.context;
     return out;
   }
-  return fail(first || 'QUOTE_MISMATCH');
+  return fail(repoWhy || first || 'QUOTE_MISMATCH');   // the repo file's reason, when there is one
 }
 
 const withheld = (ref, reason) => (ref ? `${ref} — [quote withheld: ${reason}]` : `[ground withheld: ${reason}]`);
@@ -418,7 +423,7 @@ function makeEnv(repoRoot, findings, contextArgs) {
 
 function gate(text, engine, env) {
   const { blocks, unclosed, trailingOpen } = blocksOf(text, IDEAS_BEGIN);
-  const at = trailingOpen ? -1 : answerIndex(blocks);
+  const at = trailingOpen ? -1 : answerIndex(blocks, IDEA_ECHO);
 
   const counts = { proposed: 0, valid: 0, gated: 0, ungrounded: 0, over_cap: 0, invalid: 0, bad_lines: 0, overflow: 0, unclosed, ignored_fences: 0 };
   const result = { kind: 'prism-ideas-gate', version: 1, engine, root: env.rootReal || env.root, degraded: false, clean: false, blocks: blocks.length, counts, ideas: [] };
@@ -556,7 +561,7 @@ function check(gated, texts, env) {
   let bad = 0, rejectedLines = 0, unknown = 0, repeated = 0;
   (texts || []).forEach((text, bi) => {
     const { blocks, unclosed, trailingOpen } = blocksOf(text, CHECK_BEGIN);
-    const at = trailingOpen ? -1 : answerIndex(blocks);
+    const at = trailingOpen ? -1 : answerIndex(blocks, CHECK_ECHO);
     const info = { batch: bi + 1, answered: 0, fences: blocks.length, unclosed, fallback: /^\s*\[fallback:/.test(String(text || '')) };
     if (at === -1) { info.failed = true; info.why = trailingOpen ? 'cut-off fence' : (blocks.length ? 'only echoed examples' : 'no fence'); batches.push(info); return; }
     const j = jsonLines(blocks[at]);
@@ -904,7 +909,20 @@ function selftest() {
     if (fs.existsSync(path.join(repo, 'ENV~1'))) {
       r = G([idea({ grounds: ['ENV~1:1 — not a secret but in env'] })]);
       t('an 8.3 short name of a credential file is refused', /CREDENTIAL_FILE/.test(only(r).reason));
+    } else console.log('skip: 8.3 short names are off on this volume');
+    {
+      const saved2 = Object.assign({}, FS_REAL);
+      FS_REAL.native = () => { throw new Error('volume without native realpath'); };
+      let viaJs;
+      try { viaJs = verifyQuote(QUOTE, envNoFindings); } finally { Object.assign(FS_REAL, saved2); }
+      t('realpath falls back to the JS version when native fails', viaJs.ok === true);
+      t('only 8.3-shaped parts are short names', SHORT_NAME.test('ENV~1') && SHORT_NAME.test('PROGRA~1') && !SHORT_NAME.test('build~1x') && !SHORT_NAME.test('a.b~1'));
     }
+    const sec = (x) => looksSecret(x);
+    t('secret shapes: quoted literal yes, code and local same-word DSN no',
+      sec('API_KEY = "this.Xk29mQ7pL2"') && sec('mysql://deploy:deploy@prod-db.internal/x') && sec('postgres://app:S3cretPassw0rd@localhost/x') &&
+      !sec('const DB_PASSWORD = process.env.DB_PASSWORD;') && !sec('SESSION_TOKEN_TTL=86400000') && !sec('ACCESS_KEY: ReadonlyArray<string>') &&
+      !sec('postgres://postgres:postgres@localhost:5432/test') && !sec('PASSWORD = "changeme123"'));
 
     let example = '';
     try {
@@ -923,6 +941,8 @@ function selftest() {
     t('an invalid final fence still is the answer: degraded, the draft is never GATED', r.degraded === true && r.ideas.length === 1 && only(r).status === 'INVALID' && r.counts.invalid === 1);
     r = gate(`${fence([idea({ title: 'draft' })])}\n${IDEAS_BEGIN}\n${idea({ title: 'cut' })}\n`, 'claude', env);
     t('a cut-off final fence after a closed draft -> degraded, no ideas', r.degraded === true && r.ideas.length === 0 && /cut off/.test(r.note));
+    r = gate(`${fence([idea({ title: 'draft' })])}\n${fence([idea({ title: 'final', cost_note: '<one line>' }), idea({ title: 'final 2', replaces: '<LegacyModal>' })])}`, 'claude', env);
+    t('a final fence with a few unfilled placeholders is still the answer (not an echo)', r.ideas.every((i) => i.title !== 'draft') && r.ideas.length === 2);
     r = gate(`${IDEAS_BEGIN}\n${END}\n${fence(['garbage'])}`, 'claude', env);
     t('an empty fence followed by a garbage fence is not clean', r.clean === false && r.degraded === true);
 
@@ -987,6 +1007,10 @@ function selftest() {
     t('checker output without a fence -> degraded, all UNCHECKED', r.check.degraded === true && r.check.unchecked === 5 && r.check.failed_batches === 1);
     r = check(g, [CHECK([{ key: K[0], verdict: 'KEEP', reason: 'a real verdict' }]) + `\n${CHECK_BEGIN}\n${END}`], env);
     t('an empty checker fence answers nothing (failed batch), even after a real one', r.ideas[0].verdict === 'UNCHECKED' && r.check.failed_batches === 1 && r.check.batches[0].why === 'empty fence');
+    r = check(g, [CHECK([{ key: K[0], verdict: 'KEEP', reason: 'a real verdict', basis: '<exists|conflicts|not-solving|other>', quote: '<path:lines — verbatim quote>', cost: '<S|M|L>', cost_note: '<why the cost changed>' }])], env);
+    t('a verdict that leaves the optional fields as template placeholders still counts', r.ideas[0].verdict === 'KEEP' && r.check.failed_batches === 0);
+    r = check(g, [CHECK([{ key: K[0], verdict: 'KEEP', reason: 'leaks ' + FAKE_TOKEN }])], env);
+    t('a secret in a checker reason rejects the line', r.ideas[0].check.note === 'VERDICT_REJECTED:SECRET_IN_REASON');
     r = check(g, [CHECK([{ key: K[0], verdict: 'KEEP', reason: 'draft' }]) + '\n' + CHECK([{ key: K[0], verdict: 'DROP', reason: 'final but no basis' }])], env);
     t('a final fence of rejected verdicts is the answer: the draft KEEP never lands', r.ideas[0].verdict === 'UNCHECKED' && r.ideas[0].check.note === 'VERDICT_REJECTED:DROP_WITHOUT_BASIS' && r.check.failed_batches === 1);
     r = check(g, [CHECK(K.slice(0, 4).map((k) => ({ key: k, verdict: 'KEEP', reason: 'ok' }))), '[fallback: timeout] exit 124 after 300s'], env);
@@ -1104,6 +1128,19 @@ function selftest() {
       const same = (a, b) => JSON.stringify(a) === JSON.stringify(b.slice().sort());
       t('credential globs match codex-run.sh is_credential_file', same(pats(/return 0 ;;/), CREDENTIAL_GLOBS) && same(pats(/return 1 ;;/), NOT_CREDENTIAL_GLOBS));
     }
+  });
+
+  guard('cli', () => {
+    const { spawnSync } = require('child_process');
+    const run = (args) => spawnSync(process.execPath, [__filename].concat(args), { encoding: 'utf8', timeout: 20000 });
+    const out = path.join(tmp, 'answer.txt');
+    fs.writeFileSync(out, fence([idea()]));
+    let r = run(['gate', out, 'claude', repo, '--context', '//unreachable.invalid/share/x.md']);
+    t('CLI: a network --context path exits 2', r.status === 2 && /network or stream/.test(r.stderr));
+    r = run(['gate', path.join(tmp, 'missing.txt'), 'claude', repo]);
+    t('CLI: an unreadable proposer output exits 2', r.status === 2);
+    r = run(['gate', out, 'claude', repo]);
+    t('CLI: a good gate exits 0 with JSON', r.status === 0 && JSON.parse(r.stdout).counts.gated === 1);
   });
 
   guard('junk', () => {

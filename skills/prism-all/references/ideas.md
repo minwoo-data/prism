@@ -75,8 +75,8 @@ node "<skill dir>/verify-ideas.js" gate <proposer-out> <claude|codex> <repo-root
 ```
 
 Enforced in code:
-- **Which fence:** the last closed `PRISM-IDEAS v1` fence. Only a fence whose every line still
-  carries the contract's `"<...>"` placeholders (an echoed example) is skipped. A draft or planted
+- **Which fence:** the last closed `PRISM-IDEAS v1` fence. Only an echoed contract example is
+  skipped: a fence whose every line still has the template placeholder in `lens`. A draft or planted
   fence earlier in the output never wins, even when the last fence is invalid (then the engine is
   `degraded` and the last fence's lines are listed as `INVALID`). An empty final fence means "no
   ideas" (`clean`). A final fence cut off before `<<<END>>>` is no answer (`degraded`).
@@ -88,8 +88,9 @@ Enforced in code:
   sit at the cited lines (±2) of a file under the repo root or a `--context` file, span ≤ 40 lines,
   be ≥ 8 characters, and is refused for network paths, credential files (the same globs
   `codex-run.sh` refuses, checked on the real path), `.git`/`.hg`/`.svn` internals and
-  secret-shaped text (code that only names a secret, such as an environment lookup, a call or a
-  local test DSN, is fine). A quote is matched against every file its path can mean (a `--context`
+  secret-shaped text: a known token format, credentials in a URL, or a secret-named key with a
+  quoted literal (an unquoted value is code that only names a secret, and a local test DSN whose
+  user and password are the same word is fine). A quote is matched against every file its path can mean (a `--context`
   file named that way and the repo file), so neither shadows the other; a `--context` basename
   counts only when nothing else matched.
 - No valid ground, or a `problem` that names an unverified finding, makes the idea `UNGROUNDED`.
