@@ -75,17 +75,23 @@ node "<skill dir>/verify-ideas.js" gate <proposer-out> <claude|codex> <repo-root
 ```
 
 Enforced in code:
-- **Which fence:** the last closed `PRISM-IDEAS v1` fence that is empty or holds a valid idea. A
-  draft, an echoed contract example or a planted fence earlier in the output never wins; an empty
-  final fence means "no ideas" (`clean`); a fence without `<<<END>>>` is never an answer.
+- **Which fence:** the last closed `PRISM-IDEAS v1` fence. Only a fence whose every line still
+  carries the contract's `"<...>"` placeholders (an echoed example) is skipped. A draft or planted
+  fence earlier in the output never wins, even when the last fence is invalid (then the engine is
+  `degraded` and the last fence's lines are listed as `INVALID`). An empty final fence means "no
+  ideas" (`clean`). A final fence cut off before `<<<END>>>` is no answer (`degraded`).
 - **Shape:** JSON shape, enums, lengths, placeholder values; every text flattened to one line (no
-  control, line-break or bidi characters).
+  control, line-break or bidi characters); a text field holding something secret-shaped makes the
+  idea `INVALID`.
 - **Cap:** the first 3 format-valid ideas per lens are kept, later ones are `OVER_CAP`.
 - **Grounds:** a finding must be machine-checked `SUPPORTED`/`REPRODUCED` (see above). A quote must
   sit at the cited lines (±2) of a file under the repo root or a `--context` file, span ≤ 40 lines,
   be ≥ 8 characters, and is refused for network paths, credential files (the same globs
   `codex-run.sh` refuses, checked on the real path), `.git`/`.hg`/`.svn` internals and
-  secret-shaped text. A repo file always wins over a `--context` file with the same basename.
+  secret-shaped text (code that only names a secret, such as an environment lookup, a call or a
+  local test DSN, is fine). A quote is matched against every file its path can mean (a `--context`
+  file named that way and the repo file), so neither shadows the other; a `--context` basename
+  counts only when nothing else matched.
 - No valid ground, or a `problem` that names an unverified finding, makes the idea `UNGROUNDED`.
 - The text of a failed ground is never kept: only `path:lines` and the reason.
 - Status per idea: `GATED` / `UNGROUNDED` / `OVER_CAP` / `INVALID`. No fence, or no fence with a
@@ -125,17 +131,20 @@ node "<skill dir>/verify-ideas.js" check <engine>.gated.json <batch-1-out> <repo
 
 Enforced in code:
 - The input must be the gate output; a re-check starts again from `gated.json` with every batch.
-- One checker output per batch file. In each, the last closed `PRISM-IDEA-CHECK v1` fence counts;
-  within it the last line for a key wins.
+- One checker output per batch file. In each, the last closed `PRISM-IDEA-CHECK v1` fence counts
+  (echoed examples skipped, as in 4b); within it the last line for a key wins. An empty or cut-off
+  final fence answers nothing.
 - A `DROP` stands only on a quote that verifies, unless its basis is `not-solving`; otherwise it
   becomes `WEAK` (note `DROP_QUOTE_UNVERIFIED`). A failed quote's text is never kept.
 - An unanswered key becomes `UNCHECKED` (note `NO_VERDICT`, or `VERDICT_REJECTED:<reason>` when its
   line broke the contract). Unknown keys are ignored and counted.
 - If two batch files answer the same key differently, the stricter verdict stands
   (`CHECKERS_DISAGREE`).
-- A batch file without a usable fence (a `[fallback: ...]` marker, an empty answer) is a failed
-  batch: `check.partial` (some keys answered) or `check.degraded` (none answered). Nothing GATED
-  means neither.
+- A batch file without a usable answer (a `[fallback: ...]` marker, no fence, an empty fence,
+  only rejected lines) is a failed batch, counted in `failed_batches` with its reason.
+  `check.degraded` means no GATED key was answered, `check.partial` that some were not. A retry
+  that answers the failed batch's keys clears both (pass the retry's file; keeping the failed one
+  next to it is harmless). Nothing GATED means neither.
 - An unreadable input file is a usage error (exit 2), never an empty answer.
 
 ## 4d. Group and rank

@@ -12,27 +12,29 @@ so prism's behavior does not change.
 
 ### Added
 - **`verify-ideas.js`** (canonical in prism-all, synced to prism and prism-codex):
-  - `gate` takes the last closed `PRISM-IDEAS v1` fence that is empty or holds a valid idea (a
-    draft, an echoed example or a planted fence earlier in the output never wins; an unclosed fence
-    is never an answer), validates every JSON line and flattens every text to one line. Ideas past
-    the 3rd per lens become `OVER_CAP`.
+  - `gate` takes the last closed `PRISM-IDEAS v1` fence (only an echoed contract example is
+    skipped; a draft or planted fence earlier in the output never wins, and a cut-off final fence is
+    no answer), validates every JSON line and flattens every text to one line. Ideas past the 3rd
+    per lens become `OVER_CAP`.
   - `gate` checks every ground. A finding ID counts only if the final `checked.json` has it as
     `SUPPORTED`/`REPRODUCED` and `verify-evidence.js` quote-checked it. A `path:lines — quote`
     counts only if the quote is really at those lines, in a file under the repo root or a
     `--context` file. Quotes span at most 40 lines and are at least 8 characters; network paths,
     credential files (the `codex-run.sh` globs, on the real path), `.git` internals and
-    secret-shaped quotes are refused. No valid ground means `UNGROUNDED`, and a failed ground's text
-    is never kept.
+    secret-shaped quotes are refused (code that only names a secret is fine). A quote is matched
+    against every file its path can mean, so a repo file and a same-named `--context` file never
+    shadow each other. No valid ground means `UNGROUNDED`, and a failed ground's text is never kept.
   - Idea keys are `<engine>-<n>-<hash>`, so a verdict or group from another gate run cannot land on
     a different idea.
   - `check` applies `PRISM-IDEA-CHECK v1` verdicts, one checker output per batch. A `DROP` without
     a verified quote becomes `WEAK` unless its basis is `not-solving`; a missing verdict becomes
-    `UNCHECKED`, and a rejected one says why. A failed batch makes the result `partial` or
-    `degraded`; two checkers that disagree leave the stricter verdict.
+    `UNCHECKED`, and a rejected one says why. An empty or cut-off checker answer answers nothing; a
+    failed batch is counted and makes the result `partial` or `degraded` until a retry answers its
+    keys; two checkers that disagree leave the stricter verdict.
   - `rank` sets `cross_model` only from explicit groups, orders ideas by content alone, and reports
     degraded proposers and checkers in `meta`.
   - Unreadable inputs, a findings file of the wrong shape and a missing `verify-evidence.js` exit 2.
-  - `--selftest` (76 cases; every deliberate code and contract break tried is caught).
+  - `--selftest` (90 cases; all 45 deliberate code and contract breaks tried are caught).
 - **`templates/ideas-contract.md`** and **`templates/idea-check-contract.md`**: the two output
   formats, each in one file that is appended verbatim and last to every prompt that needs it.
   The selftest fails if a contract stops naming a field, value or limit the script enforces.

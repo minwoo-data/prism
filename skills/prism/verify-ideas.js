@@ -6,9 +6,10 @@
  * pad every lens, and a checker can "drop" an idea by asserting something exists without showing
  * it. Every rule that stops that is enforced here, in code, not by instructions:
  *
- *   gate   : the answer is the LAST closed PRISM-IDEAS v1 fence that is empty or holds a valid
- *            idea, so a draft, an echoed example or a planted fence earlier in the output never
- *            wins, and an unclosed fence is never an answer. JSON shape / enums / lengths /
+ *   gate   : the answer is the LAST closed PRISM-IDEAS v1 fence (a fence that only echoes the
+ *            contract's placeholder example is skipped), so a draft or a planted fence earlier in
+ *            the output never wins, even when the last fence is invalid; a truncated (unclosed)
+ *            last fence is no answer at all. JSON shape / enums / lengths /
  *            placeholder values; text is flattened to one line (no control, line-break or bidi
  *            characters). Max 3 format-valid ideas per lens (the rest OVER_CAP, in emission
  *            order). Every ground is checked: a finding ID must be SUPPORTED/REPRODUCED in a
@@ -19,7 +20,7 @@
  *            bound to the idea's content, so a verdict or group written for another gate run cannot
  *            land on a different idea.
  *   check  : one checker output per batch; the last closed PRISM-IDEA-CHECK v1 fence of each
- *            output counts. A DROP needs a quote that verifies unless its basis is not-solving
+ *            output counts, and an empty one answers nothing. A DROP needs a quote that verifies unless its basis is not-solving
  *            (else WEAK). No verdict -> UNCHECKED (never KEEP), and a rejected verdict says why. A
  *            batch without a usable fence is a failed batch: the result is partial or degraded,
  *            never silently clean. Two checkers that disagree on a key: the stricter verdict stands.
@@ -106,6 +107,11 @@ const globRe = (globs) => new RegExp('^(?:' + globs.map((g) => g.replace(/[.+^${
 const CREDENTIAL_RE = globRe(CREDENTIAL_GLOBS);
 const NOT_CREDENTIAL_RE = globRe(NOT_CREDENTIAL_GLOBS);
 
+const URL_RE = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]{6,}@/g;
+const KV_RE = /[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*["']?\s*[:=]\s*["']?[A-Za-z0-9_@#%^&*!.+/=~$-]{8,}/g;
+// A KEY=value whose value is code (an environment lookup, a config read, a call) is not a secret.
+const CODE_VALUE = /^(?:process\.env|os\.environ|os\.getenv|getenv|System\.getenv|ENV\[|env\.|config\.|settings\.|self\.|this\.)/i;
+const LOCAL_HOST = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/i;
 // The shapes codex-run.sh secret_patterns() quarantines, plus HTTP auth headers. A quote that looks
 // like a secret is never a ground: it would be copied into the report and the other engine's prompt.
 const SECRET_RES = [
@@ -113,8 +119,7 @@ const SECRET_RES = [
   /(?:sk|rk)_live_[A-Za-z0-9]{20,}/g, /AIzaSy[A-Za-z0-9_-]{30,}/g, /AKIA[0-9A-Z]{16}/g, /glpat-[A-Za-z0-9_-]{20,}/g,
   /gh[pousr]_[A-Za-z0-9]{20,}/g, /github_pat_[A-Za-z0-9_]{22,}/g, /xox[abpr]-[A-Za-z0-9-]{20,}/g,
   /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-  /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]{6,}@/g,
-  /[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*["']?\s*[:=]\s*["']?[A-Za-z0-9_@#%^&*!.+/=~$-]{8,}/g,
+  URL_RE, KV_RE,
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |)?PRIVATE KEY-----/g,
   /authorization\s*[:=]\s*["']?(?:basic|bearer|token)\s+[A-Za-z0-9+/=._~-]{12,}/gi,
 ];
@@ -134,7 +139,7 @@ function blocksOf(text, begin) {
     if (cur) cur.push(ln);
   }
   if (cur) unclosed++;
-  return { blocks, unclosed };
+  return { blocks, unclosed, trailingOpen: cur !== null };   // trailingOpen: the last fence was cut off
 }
 
 // -> { objs: [object...], bad: n, overflow: n, empty: bool }
@@ -154,10 +159,16 @@ function jsonLines(lines) {
   return { objs, bad, overflow, empty: nonEmpty === 0 };
 }
 
-// The last block that is empty (an explicit "nothing") or holds at least one valid line. Blocks of
-// only invalid lines (the contract's placeholder example, garbage) are skipped. -> index or -1
-function lastAnswer(parsed) {
-  for (let i = parsed.length - 1; i >= 0; i--) if (parsed[i].j.empty || parsed[i].valid > 0) return i;
+// The answer is the last closed fence. Only a fence whose every line still carries the contract's
+// `"<...>"` placeholders (an echoed example) is skipped; a draft or planted fence earlier in the
+// output never wins, even when the last fence turns out invalid. -> index or -1
+const ECHO_LINE = /"<[^"<>]+>"/;
+function answerIndex(blocks) {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const lines = blocks[i].map((l) => l.trim()).filter(Boolean);
+    if (lines.length && lines.every((l) => ECHO_LINE.test(l))) continue;
+    return i;
+  }
   return -1;
 }
 
@@ -175,6 +186,7 @@ function validateIdea(o) {
     if (!v) return { ok: false, reason: `MISSING_${f.toUpperCase()}` };
     if (v.length > IDEA_TEXT[f]) return { ok: false, reason: `TOO_LONG_${f.toUpperCase()}` };
     if (isPlaceholder(v)) return { ok: false, reason: `PLACEHOLDER_${f.toUpperCase()}` };
+    if (looksSecret(v)) return { ok: false, reason: `SECRET_IN_${f.toUpperCase()}` };
     idea[f] = v;
   }
   const cost = str(o.cost);
@@ -197,7 +209,10 @@ function validateIdea(o) {
 
 // ---------------------------------------------------------------- grounds
 
-const REALPATH = fs.realpathSync.native || fs.realpathSync;   // native: 8.3 short names resolved
+// native resolves 8.3 short names and drops stream suffixes. It fails on some virtual volumes where
+// the JS version works: then the JS result is used, unless it still holds a short-name component.
+// (An object so the selftest can count calls.)
+const FS_REAL = { native: fs.realpathSync.native || null, js: fs.realpathSync };
 function samePath(a, b) {
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
@@ -205,7 +220,13 @@ function inside(root, p) {
   const rel = path.relative(root, p);
   return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
 }
-function realOr(p) { try { return REALPATH(p); } catch (_) { return null; } }
+function realOr(p) {
+  if (FS_REAL.native) { try { return FS_REAL.native(p); } catch (_) { /* fall through */ } }
+  try {
+    const r = FS_REAL.js(p);
+    return FS_REAL.native && r.split(/[\\/]/).some((seg) => /~\d/.test(seg)) ? null : r;
+  } catch (_) { return null; }
+}
 
 // Shapes refused before any filesystem call: UNC and device paths (\\host\share, //host/share,
 // \\?\, \\.\) would make the machine contact another host; a colon after the drive letter is an
@@ -216,29 +237,35 @@ function badPathShape(p) {
   return null;
 }
 
+// Every file a ground's path can mean: a --context file named exactly as given or by the same
+// absolute path, and the repo file. A quote is matched against each, so neither a repo file nor a
+// context file can shadow the other. A --context basename counts only when nothing else matched.
+// -> { ok: true, cands: [{ real, context? }] } | { ok: false, reason }
 // env: { root, rootReal, contexts: [{arg, abs, real, base}], findings: Map|null }
 function resolveGroundPath(p, env) {
   const shape = badPathShape(p);
   if (shape) return { ok: false, reason: shape };
-  const ctxHit = (c) => ({ ok: true, real: c.real, context: c.arg });
-  for (const c of env.contexts) if (c.arg === p) return ctxHit(c);
+  const cands = [];
+  const add = (real, context) => { if (!cands.some((c) => samePath(c.real, real))) cands.push(context ? { real, context } : { real }); };
+  for (const c of env.contexts) if (c.arg === p) add(c.real, c.arg);
   const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(env.root, p);
-  for (const c of env.contexts) if (samePath(c.abs, abs)) return ctxHit(c);
+  for (const c of env.contexts) if (samePath(c.abs, abs)) add(c.real, c.arg);
+  let reason = 'PATH_OUTSIDE_ROOT';
   // Containment before touching the filesystem: a path outside the root is never opened.
   if (inside(env.root, abs) || (env.rootReal && inside(env.rootReal, abs))) {
     const real = realOr(abs);
-    if (real) {
-      for (const c of env.contexts) if (samePath(c.real, real)) return ctxHit(c);
-      if (!env.rootReal || !inside(env.rootReal, real)) return { ok: false, reason: 'PATH_OUTSIDE_ROOT' };
-      if (path.relative(env.rootReal, real).split(path.sep).some((s) => VCS_DIRS.has(s.toLowerCase()))) return { ok: false, reason: 'VCS_INTERNAL' };
-      return { ok: true, real };
-    }
-    // No repo file of that name: a --context file named by its basename (only when unambiguous).
-    const byBase = env.contexts.filter((c) => c.base === p);
-    if (byBase.length === 1) return ctxHit(byBase[0]);
-    return { ok: false, reason: 'FILE_NOT_FOUND' };
+    const ctx = real && env.contexts.find((c) => samePath(c.real, real));
+    if (!real) reason = 'FILE_NOT_FOUND';
+    else if (ctx) add(real, ctx.arg);
+    else if (!env.rootReal || !inside(env.rootReal, real)) reason = 'PATH_OUTSIDE_ROOT';
+    else if (path.relative(env.rootReal, real).split(path.sep).some((seg) => VCS_DIRS.has(seg.toLowerCase()))) reason = 'VCS_INTERNAL';
+    else add(real, null);
   }
-  return { ok: false, reason: 'PATH_OUTSIDE_ROOT' };
+  if (!cands.length) {
+    const byBase = env.contexts.filter((c) => c.base === p);
+    if (byBase.length === 1) add(byBase[0].real, byBase[0].arg);
+  }
+  return cands.length ? { ok: true, cands } : { ok: false, reason };
 }
 
 function isCredential(p) {
@@ -246,13 +273,25 @@ function isCredential(p) {
   return !NOT_CREDENTIAL_RE.test(b) && CREDENTIAL_RE.test(b);
 }
 
+// True when a quote holds something secret-shaped. Code that only names a secret (an env lookup, a
+// call, a local test DSN whose user and password are the same word) is not a secret.
 function looksSecret(s) {
   for (const re of SECRET_RES) {
     re.lastIndex = 0;
     let m;
     while ((m = re.exec(s)) !== null) {
-      if (!SECRET_PLACEHOLDER.test(m[0])) return true;
-      if (m[0].length === 0) re.lastIndex++;
+      if (m[0].length === 0) { re.lastIndex++; continue; }
+      if (SECRET_PLACEHOLDER.test(m[0])) continue;
+      if (re === KV_RE) {
+        const value = m[0].replace(/^[^:=]*[:=]\s*["']?/, '');
+        if (CODE_VALUE.test(value) || s[re.lastIndex] === '(') continue;
+      }
+      if (re === URL_RE) {
+        const host = (s.slice(re.lastIndex).match(/^[^/:\s?#]*/) || [''])[0];
+        const up = m[0].match(/:\/\/([^/\s:@]+):([^/\s:@]+)@$/);
+        if (LOCAL_HOST.test(host) || (up && up[1] === up[2])) continue;
+      }
+      return true;
     }
   }
   return false;
@@ -285,16 +324,29 @@ function verifyQuote(raw, env) {
   if (looksSecret(quote)) return fail('SECRET_IN_QUOTE');
   const res = resolveGroundPath(p, env);
   if (!res.ok) return fail(res.reason);
-  if (isCredential(res.real)) return fail('CREDENTIAL_FILE');
-  let src;
-  try { src = fs.readFileSync(res.real, 'utf8'); } catch (_) { return fail('FILE_NOT_FOUND'); }
-  const srcLines = src.split(VE.NL);
-  if (range[0] < 1 || range[1] > srcLines.length) return fail('LINES_OUT_OF_RANGE');
-  const w = VE.quoteWindow(srcLines, range);
-  if (!VE.quoteInWindow(w.text, quote)) return fail('QUOTE_MISMATCH');
-  const out = { ok: true, ref, file: p, lines: `${range[0]}-${range[1]}`, matched_lines: `${w.from}-${w.to}` };
-  if (res.context) out.context = res.context;
-  return out;
+  let first = null;
+  for (const c of res.cands) {
+    const why = (() => {
+      if (isCredential(c.real)) return 'CREDENTIAL_FILE';
+      let src;
+      try { src = fs.readFileSync(c.real, 'utf8'); } catch (_) { return 'FILE_NOT_FOUND'; }
+      const srcLines = src.split(VE.NL);
+      if (range[0] < 1 || range[1] > srcLines.length) return 'LINES_OUT_OF_RANGE';
+      const w = VE.quoteWindow(srcLines, range);
+      // Quotes lose zero-width characters when cleaned, so the source window loses them too.
+      if (!VE.quoteInWindow(w.text.replace(ZW, ''), quote)) return 'QUOTE_MISMATCH';
+      return { from: w.from, to: w.to };
+    })();
+    if (typeof why === 'string') {
+      if (why === 'CREDENTIAL_FILE') return fail(why);   // never fall through past a credential file
+      first = first || why;
+      continue;
+    }
+    const out = { ok: true, ref, file: p, lines: `${range[0]}-${range[1]}`, matched_lines: `${why.from}-${why.to}` };
+    if (c.context) out.context = c.context;
+    return out;
+  }
+  return fail(first || 'QUOTE_MISMATCH');
 }
 
 const withheld = (ref, reason) => (ref ? `${ref} — [quote withheld: ${reason}]` : `[ground withheld: ${reason}]`);
@@ -365,35 +417,28 @@ function makeEnv(repoRoot, findings, contextArgs) {
 // ---------------------------------------------------------------- gate
 
 function gate(text, engine, env) {
-  const { blocks, unclosed } = blocksOf(text, IDEAS_BEGIN);
-  const parsed = blocks.map((b) => {
-    const j = jsonLines(b);
-    const checked = j.objs.map((o) => ({ o, v: validateIdea(o) }));
-    return { j, checked, valid: checked.filter((c) => c.v.ok).length };
-  });
-  let at = lastAnswer(parsed);
+  const { blocks, unclosed, trailingOpen } = blocksOf(text, IDEAS_BEGIN);
+  const at = trailingOpen ? -1 : answerIndex(blocks);
 
   const counts = { proposed: 0, valid: 0, gated: 0, ungrounded: 0, over_cap: 0, invalid: 0, bad_lines: 0, overflow: 0, unclosed, ignored_fences: 0 };
   const result = { kind: 'prism-ideas-gate', version: 1, engine, root: env.rootReal || env.root, degraded: false, clean: false, blocks: blocks.length, counts, ideas: [] };
   if (env.findingsInfo) result.findings = env.findingsInfo;
-  if (!blocks.length) {
+  if (!env.rootReal) { result.degraded = true; result.note = `repo root cannot be resolved: ${env.root}`; }
+  if (at === -1) {
     result.degraded = true;
-    result.note = unclosed ? 'PRISM-IDEAS v1 fence never closed (no <<<END>>>): not an answer' : 'no PRISM-IDEAS v1 fence';
+    result.note = trailingOpen ? 'the last PRISM-IDEAS v1 fence never closed (no <<<END>>>): cut off, not an answer'
+      : (blocks.length ? 'only echoed contract examples, no answer fence' : (unclosed ? 'PRISM-IDEAS v1 fence never closed (no <<<END>>>): not an answer' : 'no PRISM-IDEAS v1 fence'));
     return result;
   }
-  if (at === -1) {
-    // No fence holds a valid idea: report the last fence's lines as INVALID so the reasons survive.
-    at = blocks.length - 1;
-    result.degraded = true;
-    result.note = 'no fence holds a valid PRISM-IDEAS v1 line';
-  }
-  const best = parsed[at];
+  const j = jsonLines(blocks[at]);
+  const best = { j, checked: j.objs.map((o) => ({ o, v: validateIdea(o) })) };
   counts.ignored_fences = blocks.length - 1;
-  if (counts.ignored_fences && !result.note) result.note = `${counts.ignored_fences} earlier fence(s) ignored: the last answer counts`;
-  counts.bad_lines = best.j.bad;
-  counts.overflow = best.j.overflow;
+  counts.bad_lines = j.bad;
+  counts.overflow = j.overflow;
   counts.proposed = best.checked.length;
-  if (best.j.empty) result.clean = true;
+  if (j.empty) result.clean = true;
+  else if (!best.checked.some((c) => c.v.ok)) { result.degraded = true; result.note = 'the answer fence holds no valid PRISM-IDEAS v1 line'; }
+  if (counts.ignored_fences && !result.note) result.note = `${counts.ignored_fences} other fence(s) ignored: only the last answer counts`;
 
   const perLens = {};
   best.checked.forEach((c, i) => {
@@ -450,6 +495,7 @@ function validateVerdict(o) {
   if (!verdict || VERDICTS.indexOf(verdict.toUpperCase()) === -1) return no('BAD_VERDICT');
   const reason = str(o.reason);
   if (!reason || reason.length > MAX_REASON || isPlaceholder(reason)) return no('BAD_REASON');
+  if (looksSecret(reason)) return no('SECRET_IN_REASON');
   const v = { key, verdict: verdict.toUpperCase(), reason };
   const basis = str(o.basis);
   if (basis && BASES.indexOf(basis.toLowerCase()) !== -1) v.basis = basis.toLowerCase();
@@ -509,18 +555,14 @@ function check(gated, texts, env) {
   const batches = [];
   let bad = 0, rejectedLines = 0, unknown = 0, repeated = 0;
   (texts || []).forEach((text, bi) => {
-    const { blocks, unclosed } = blocksOf(text, CHECK_BEGIN);
-    const parsed = blocks.map((b) => {
-      const j = jsonLines(b);
-      const rs = j.objs.map(validateVerdict);
-      return { j, rs, valid: rs.filter((r) => r.ok).length };
-    });
-    let at = lastAnswer(parsed);
+    const { blocks, unclosed, trailingOpen } = blocksOf(text, CHECK_BEGIN);
+    const at = trailingOpen ? -1 : answerIndex(blocks);
     const info = { batch: bi + 1, answered: 0, fences: blocks.length, unclosed, fallback: /^\s*\[fallback:/.test(String(text || '')) };
-    if (!parsed.length) { info.failed = true; batches.push(info); return; }
-    // No fence holds a valid verdict: the last fence still tells which keys were answered badly.
-    if (at === -1) { at = parsed.length - 1; info.failed = true; }
-    const chosen = parsed[at];
+    if (at === -1) { info.failed = true; info.why = trailingOpen ? 'cut-off fence' : (blocks.length ? 'only echoed examples' : 'no fence'); batches.push(info); return; }
+    const j = jsonLines(blocks[at]);
+    // An empty checker answer answers nothing: the batch failed.
+    if (j.empty) { info.failed = true; info.why = 'empty fence'; batches.push(info); return; }
+    const chosen = { j, rs: j.objs.map(validateVerdict) };
     bad += chosen.j.bad;
     const mine = new Map();
     for (const r of chosen.rs) {
@@ -535,6 +577,7 @@ function check(gated, texts, env) {
     }
     for (const [k, v] of mine) { if (!answers.has(k)) answers.set(k, []); answers.get(k).push(v); }
     info.answered = mine.size;
+    if (!mine.size) { info.failed = true; info.why = 'no valid verdict'; }
     batches.push(info);
   });
 
@@ -604,7 +647,7 @@ function rank(inputs, groupsRaw) {
     if (inp.degraded) addTo(meta.degraded_engines, inp.engine);
     if (inp.check) {
       if (inp.check.degraded) addTo(meta.check_degraded, inp.engine);
-      if (inp.check.partial || inp.check.failed_batches) addTo(meta.check_partial, inp.engine);
+      if (inp.check.partial) addTo(meta.check_partial, inp.engine);
       for (const f of Object.keys(meta.check)) meta.check[f] += inp.check[f] || 0;
     }
     for (const idea of inp.ideas) {
@@ -734,6 +777,12 @@ function selftest() {
   fs.writeFileSync(path.join(repo, 'deploy.token'), 'value-of-the-deploy-token\n');
   fs.writeFileSync(path.join(repo, '.token'), 'value-of-the-bare-token-file\n');
   fs.writeFileSync(path.join(repo, 'src', 'config.js'), `const auth = "${FAKE_TOKEN}"; // fixture\n`);
+  fs.writeFileSync(path.join(repo, 'src', 'db.js'), [
+    'const DB_PASSWORD = process.env.DB_PASSWORD;',
+    'const SECRET_KEY = loadSecretFromVault(config);',
+    'const url = "postgres://postgres:postgres@localhost:5432/test";',
+    `const label = "a${ch(0x200D)}b joined";`,
+  ].join('\n') + '\n');
   fs.writeFileSync(path.join(repo, '.git', 'config'), '[http]\n\textraheader = from the checkout step of the pipeline\n');
   fs.writeFileSync(path.join(tmp, 'outside.txt'), 'this text lives outside the repo root\n');
   const ctxFile = path.join(tmp, 'ctx', 'notes.md');
@@ -800,6 +849,13 @@ function selftest() {
     t('--context file outside the root is allowed (by name and by path)', r.ideas.every((i) => i.status === 'GATED') && r.ideas[0].ground_checks[0].context === ctxFile);
     r = gate(fence([idea({ grounds: ['README.md:1 — The scorer in this repository is keyword based.'] })]), 'claude', makeEnv(repo, null, [ctxReadme]));
     t('a repo file is not shadowed by a --context file of the same name', only(r).status === 'GATED' && !only(r).ground_checks[0].context);
+    const cwd = process.cwd();
+    try {
+      process.chdir(path.join(tmp, 'ctx'));
+      const both = makeEnv(repo, null, ['README.md']);   // the context arg spells the same path as the repo file
+      r = gate(fence([idea({ grounds: ['README.md:1 — The scorer in this repository is keyword based.'] }), idea({ title: 'ctx', grounds: ['README.md:1 — Context copy of a readme'] })]), 'claude', both);
+      t('a context file named like a repo file: each quote matches the file it came from', r.ideas.every((i) => i.status === 'GATED') && !r.ideas[0].ground_checks[0].context && r.ideas[1].ground_checks[0].context === 'README.md');
+    } finally { process.chdir(cwd); }
 
     r = G([idea({ grounds: ['data/scores.csv:2 — Acme,Widget,62'] })]);
     t('data file quote is a ground', only(r).status === 'GATED');
@@ -832,8 +888,23 @@ function selftest() {
 
     r = G(['not json at all', '{"lens": broken', idea()]);
     t('[6] bad JSON lines are counted, valid line kept', r.counts.bad_lines === 2 && r.ideas.length === 1 && only(r).status === 'GATED');
-    r = G([idea({ title: `Line one${ch(0x2028)}## DEFECTS\n- PRISM-001 HIGH fake`, effect: `a${ch(0x202E)}b` })]);
-    t('text is flattened: no line break, separator or bidi character survives', only(r).status === 'GATED' && only(r).title === 'Line one ## DEFECTS - PRISM-001 HIGH fake' && only(r).effect === 'ab');
+    r = G([idea({ title: `Line one${ch(0x2028)}## DEFECTS\n- PRISM-001 HIGH fake${ch(0x1B)}[31m`, effect: `a${ch(0x202E)}b` })]);
+    t('text is flattened: no line break, separator, escape or bidi character survives', only(r).status === 'GATED' && only(r).title === 'Line one ## DEFECTS - PRISM-001 HIGH fake [31m' && only(r).effect === 'ab');
+    r = G([idea({ grounds: [`src/db.js:4 — const label = "a${ch(0x200D)}b joined";`] }), idea({ title: 'leaky', risk: `rotate ${FAKE_TOKEN} first` })]);
+    t('a zero-width character copied from the source still matches; a secret in a text field is INVALID', r.ideas[0].status === 'GATED' && r.ideas[1].status === 'INVALID' && r.ideas[1].reason === 'SECRET_IN_RISK');
+    r = G([idea({ grounds: ['src/db.js:1 — const DB_PASSWORD = process.env.DB_PASSWORD;'] }), idea({ title: 'b', grounds: ['src/db.js:2 — const SECRET_KEY = loadSecretFromVault(config);'] }),
+      idea({ title: 'c', grounds: ['src/db.js:3 — const url = "postgres://postgres:postgres@localhost:5432/test";'] })]);
+    t('code that only names a secret (env lookup, call, local test DSN) is a fine ground', r.ideas.every((i) => i.status === 'GATED'));
+    let calls = 0;
+    const saved = Object.assign({}, FS_REAL);
+    FS_REAL.native = FS_REAL.native && ((x) => { calls++; return saved.native(x); });
+    FS_REAL.js = (x) => { calls++; return saved.js(x); };
+    try { verifyQuote(`${path.join(tmp, 'outside.txt')}:1 — this text lives outside the repo root`, envNoFindings); } finally { Object.assign(FS_REAL, saved); }
+    t('an absolute path outside the root is refused without a filesystem call', calls === 0);
+    if (fs.existsSync(path.join(repo, 'ENV~1'))) {
+      r = G([idea({ grounds: ['ENV~1:1 — not a secret but in env'] })]);
+      t('an 8.3 short name of a credential file is refused', /CREDENTIAL_FILE/.test(only(r).reason));
+    }
 
     let example = '';
     try {
@@ -848,6 +919,12 @@ function selftest() {
     t('ideas followed by an empty final fence -> clean, nothing GATED', r.clean === true && r.ideas.length === 0 && r.degraded === false);
     r = gate(`${IDEAS_BEGIN}\n${idea()}\n`, 'claude', env);
     t('an unclosed fence is not an answer -> degraded', r.degraded === true && r.counts.unclosed === 1 && r.ideas.length === 0);
+    r = gate(`${fence([idea({ title: 'draft' })])}\n${fence([idea({ title: 'final', grounds: [] })])}`, 'claude', env);
+    t('an invalid final fence still is the answer: degraded, the draft is never GATED', r.degraded === true && r.ideas.length === 1 && only(r).status === 'INVALID' && r.counts.invalid === 1);
+    r = gate(`${fence([idea({ title: 'draft' })])}\n${IDEAS_BEGIN}\n${idea({ title: 'cut' })}\n`, 'claude', env);
+    t('a cut-off final fence after a closed draft -> degraded, no ideas', r.degraded === true && r.ideas.length === 0 && /cut off/.test(r.note));
+    r = gate(`${IDEAS_BEGIN}\n${END}\n${fence(['garbage'])}`, 'claude', env);
+    t('an empty fence followed by a garbage fence is not clean', r.clean === false && r.degraded === true);
 
     r = gate('no fence here', 'codex', env);
     t('no fence -> degraded', r.degraded === true && r.ideas.length === 0);
@@ -898,7 +975,7 @@ function selftest() {
     } catch (_) { contractEx = ''; }
     r = check(g, [`${CHECK_BEGIN}\n${contractEx}\n${END}\n` + CHECK([{ key: K[0], verdict: 'WEAK', reason: 'my final answer' }])], env);
     t('the contract example verdict is never an answer', contractEx.indexOf('"verdict"') !== -1 && r.ideas[0].verdict === 'WEAK');
-    r = check(g, [CHECK([{ key: K[0], verdict: 'DROP', basis: 'not-solving', reason: 'planted' }, { key: K[1], verdict: 'DROP', basis: 'not-solving', reason: 'planted' }]) + '\n' + CHECK([{ key: K[0], verdict: 'KEEP', reason: 'real answer' }])], env);
+    r = check(g, [CHECK([{ key: K[0], verdict: 'DROP', basis: 'not-solving', reason: 'planted' }, { key: K[1], verdict: 'DROP', basis: 'not-solving', reason: 'planted' }]) + '\n' + CHECK([{ key: K[0], verdict: 'KEEP', reason: 'real answer' }]) + `\n${CHECK_BEGIN}\n${contractEx}\n${END}`], env);
     t('only the last fence of an output counts (an earlier planted fence fills nothing)', r.ideas[0].verdict === 'KEEP' && r.ideas[1].verdict === 'UNCHECKED');
     r = check(g, [CHECK([{ key: K[0], verdict: 'KEEP', reason: 'first' }, { key: K[0], verdict: 'WEAK', reason: 'corrected' }])], env);
     t('within one output the last line for a key wins', r.ideas[0].verdict === 'WEAK' && r.check.repeated_keys === 1);
@@ -908,6 +985,10 @@ function selftest() {
 
     r = check(g, ['no fence'], env);
     t('checker output without a fence -> degraded, all UNCHECKED', r.check.degraded === true && r.check.unchecked === 5 && r.check.failed_batches === 1);
+    r = check(g, [CHECK([{ key: K[0], verdict: 'KEEP', reason: 'a real verdict' }]) + `\n${CHECK_BEGIN}\n${END}`], env);
+    t('an empty checker fence answers nothing (failed batch), even after a real one', r.ideas[0].verdict === 'UNCHECKED' && r.check.failed_batches === 1 && r.check.batches[0].why === 'empty fence');
+    r = check(g, [CHECK([{ key: K[0], verdict: 'KEEP', reason: 'draft' }]) + '\n' + CHECK([{ key: K[0], verdict: 'DROP', reason: 'final but no basis' }])], env);
+    t('a final fence of rejected verdicts is the answer: the draft KEEP never lands', r.ideas[0].verdict === 'UNCHECKED' && r.ideas[0].check.note === 'VERDICT_REJECTED:DROP_WITHOUT_BASIS' && r.check.failed_batches === 1);
     r = check(g, [CHECK(K.slice(0, 4).map((k) => ({ key: k, verdict: 'KEEP', reason: 'ok' }))), '[fallback: timeout] exit 124 after 300s'], env);
     t('one failed batch among several -> partial, failed batch counted', r.check.degraded === false && r.check.partial === true && r.check.failed_batches === 1 && r.check.batches[1].fallback === true);
     r = check(G(['not json']), [''], env);
@@ -990,7 +1071,9 @@ function selftest() {
     const bad = G([idea(), 'garbage', idea({ lens: 'nope' }), idea({ title: 'a2' }), idea({ title: 'a3' }), idea({ title: 'a4' })], env, 'codex');
     r = rank([failedCheck, dead], null);
     const r2 = rank([partCheck, check(bad, [CHECK([])], env)], null);
-    t('meta reports degraded proposers, failed and partial checkers', r.meta.degraded_engines.join() === 'codex' && r.meta.check_degraded.join() === 'claude' && r2.meta.check_partial.indexOf('claude') !== -1 && r2.meta.check.failed_batches === 1);
+    const retried = check(glc, ['[fallback: timeout]', CHECK(C.map((k) => ({ key: k, verdict: 'KEEP', reason: 'r' })))], env);
+    t('a failed batch whose retry answered every key is not partial', retried.check.partial === false && retried.check.failed_batches === 1 && rank([retried], null).meta.check_partial.length === 0);
+    t('meta reports degraded proposers, failed and partial checkers', r.meta.degraded_engines.join() === 'codex' && r.meta.check_degraded.join() === 'claude' && r2.meta.check_partial.indexOf('claude') !== -1 && r2.meta.check.failed_batches === 2);
     t('meta sums invalid, over cap, bad lines and ungrounded across engines', r2.meta.invalid === 1 && r2.meta.over_cap === 1 && r2.meta.bad_lines === 1 && r2.meta.ungrounded === 0 && r2.meta.proposed === 10);
   });
 
@@ -1084,7 +1167,7 @@ function main(argv) {
     const [out, engine, root] = pos;
     if (ENGINES.indexOf(engine) === -1) usage(`engine must be one of ${ENGINES.join('|')}`);
     if (!fs.existsSync(root)) usage(`repo root not found: ${root}`);
-    for (const c of opts['--context']) if (!fs.existsSync(c)) usage(`context file not found: ${c}`);
+    for (const c of opts['--context']) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`context file not found: ${c}`); }
     const findings = opts['--findings'] !== undefined ? readJson(opts['--findings'], 'findings file') : null;
     const env = makeEnv(root, findings, opts['--context']);
     if (env.findingsError) usage(env.findingsError);
@@ -1097,7 +1180,7 @@ function main(argv) {
     if (pos.length !== 3) usage('check takes <gated.json> <checker-out> <repo-root>');
     const [gatedFile, out, root] = pos;
     if (!fs.existsSync(root)) usage(`repo root not found: ${root}`);
-    for (const c of opts['--context']) if (!fs.existsSync(c)) usage(`context file not found: ${c}`);
+    for (const c of opts['--context']) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`context file not found: ${c}`); }
     const gated = readJson(gatedFile, 'gated file');
     const texts = [out].concat(opts['--also']).map((f) => readText(f, 'checker output'));
     const res = check(gated, texts, makeEnv(root, null, opts['--context']));
@@ -1118,7 +1201,7 @@ function main(argv) {
   usage(cmd ? `unknown command ${cmd}` : 'missing command');
 }
 
-module.exports = { gate, check, rank, makeEnv, verifyQuote };
+module.exports = { gate, check, rank, makeEnv, verifyQuote, looksSecret };
 
 if (require.main === module) {
   try { main(process.argv.slice(2)); } catch (e) {

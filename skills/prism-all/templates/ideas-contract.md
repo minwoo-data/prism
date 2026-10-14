@@ -8,8 +8,8 @@ placeholder you replace (a line that still contains a placeholder value is disca
 {"lens":"<class|route|subtract>","title":"<short title>","problem":"<the real problem this solves>","grounds":["<PRISM-NNN or path:lines — verbatim quote>"],"proposal":"<what to do instead>","replaces":"<what it replaces or removes, or none>","cost":"<S|M|L>","cost_note":"<one line>","effect":"<expected effect and how you would know it worked>","risk":"<what could go wrong, and the mitigation>"}
 <<<END>>>
 
-Only the last block of your message that is empty or holds a valid line counts: an earlier draft
-is ignored. A block without its `<<<END>>>` line is discarded.
+Only the last block of your message counts: an earlier draft is ignored, even when the last block
+turns out invalid. A block cut off before its `<<<END>>>` line is no answer.
 
 ### Fields (all required)
 
@@ -26,7 +26,8 @@ is ignored. A block without its `<<<END>>>` line is discarded.
 | `effect` | at most 500 characters. The expected effect, and how you would know it worked |
 | `risk` | at most 500 characters. What could go wrong, and the mitigation |
 
-Every text is flattened to one line (line breaks become spaces).
+Every text is flattened to one line (line breaks become spaces). A text that holds something
+secret-shaped makes the idea invalid.
 
 ### Grounding (a script checks every idea; an idea with no valid ground is discarded)
 

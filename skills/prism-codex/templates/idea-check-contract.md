@@ -8,7 +8,8 @@ shows the shape; every `<...>` is a placeholder you replace:
 {"key":"<idea key>","verdict":"<KEEP|WEAK|DROP>","basis":"<exists|conflicts|not-solving|other>","reason":"<one or two sentences>","quote":"<path:lines — verbatim quote>","cost":"<S|M|L>","cost_note":"<why the cost changed>"}
 <<<END>>>
 
-Only the last block of your message counts, and a block without its `<<<END>>>` line is discarded.
+Only the last block of your message counts. A block cut off before its `<<<END>>>` line, or an
+empty block, answers nothing.
 
 ### Fields
 
