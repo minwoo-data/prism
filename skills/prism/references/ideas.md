@@ -81,8 +81,8 @@ Enforced in code:
   `degraded` and the last fence's lines are listed as `INVALID`). An empty final fence means "no
   ideas" (`clean`). A final fence cut off before `<<<END>>>` is no answer (`degraded`).
 - **Shape:** JSON shape, enums, lengths, placeholder values; every text flattened to one line (no
-  control, line-break or bidi characters); a text field holding something secret-shaped makes the
-  idea `INVALID`.
+  control, line-break or bidi characters); a text field holding something secret-shaped (including
+  an unquoted `.env`-style `KEY=value` with letters and digits) makes the idea `INVALID`.
 - **Cap:** the first 3 format-valid ideas per lens are kept, later ones are `OVER_CAP`.
 - **Grounds:** a finding must be machine-checked `SUPPORTED`/`REPRODUCED` (see above). A quote must
   sit at the cited lines (±2) of a file under the repo root or a `--context` file, span ≤ 40 lines,

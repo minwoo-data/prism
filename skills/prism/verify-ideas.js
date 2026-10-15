@@ -112,6 +112,11 @@ const URL_RE = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]{6,}@/g;
 // lookup, a call, a constant) and names a secret without holding one.
 const KV_RE = /[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*["']?\s*[:=]\s*["'][A-Za-z0-9_@#%^&*!.+/=~$-]{8,}/g;
 const LOCAL_HOST = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/i;
+// Stock passwords of local development databases; with a local host they are not a secret.
+const DEV_PASSWORD = /^(?:password|passwd|secret|postgres|root|admin|test|example|dev|local)$/i;
+// Free text (an idea's fields, a checker's reason) can carry a .env line, where values are not
+// quoted: there an unquoted value with a letter and a digit, not code (no `.`, `(`, `<`), counts.
+const KV_TEXT_RE = /[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*[:=]\s*([A-Za-z0-9_@#%^&*!+/=~$-]{8,})(?![.(<A-Za-z0-9_])/g;
 // The shapes codex-run.sh secret_patterns() quarantines, plus HTTP auth headers. A quote that looks
 // like a secret is never a ground: it would be copied into the report and the other engine's prompt.
 const SECRET_RES = [
@@ -165,7 +170,10 @@ function jsonLines(lines) {
 // wins, even when the last fence turns out invalid. -> index or -1
 const echoOf = (fields) => (line) => {
   let o = null;
-  try { o = JSON.parse(line); } catch (_) { return false; }
+  try { o = JSON.parse(line); } catch (_) {
+    // An abbreviated copy of the example (`{"lens":"<class|route|subtract>", ...}`) is not JSON.
+    return fields.some((f) => new RegExp('"' + f + '"\\s*:\\s*"<[^"<>]+>"').test(line));
+  }
   return !!o && typeof o === 'object' && fields.some((f) => typeof o[f] === 'string' && isPlaceholder(o[f]));
 };
 const IDEA_ECHO = echoOf(['lens']);
@@ -193,7 +201,7 @@ function validateIdea(o) {
     if (!v) return { ok: false, reason: `MISSING_${f.toUpperCase()}` };
     if (v.length > IDEA_TEXT[f]) return { ok: false, reason: `TOO_LONG_${f.toUpperCase()}` };
     if (isPlaceholder(v)) return { ok: false, reason: `PLACEHOLDER_${f.toUpperCase()}` };
-    if (looksSecret(v)) return { ok: false, reason: `SECRET_IN_${f.toUpperCase()}` };
+    if (looksSecretText(v)) return { ok: false, reason: `SECRET_IN_${f.toUpperCase()}` };
     idea[f] = v;
   }
   const cost = str(o.cost);
@@ -294,10 +302,22 @@ function looksSecret(s) {
       if (re === URL_RE) {
         const host = (s.slice(re.lastIndex).match(/^[^/:\s?#]*/) || [''])[0];
         const up = m[0].match(/:\/\/([^/\s:@]+):([^/\s:@]+)@$/);
-        if (LOCAL_HOST.test(host) && up && up[1] === up[2]) continue;
+        if (LOCAL_HOST.test(host) && up && (up[1] === up[2] || DEV_PASSWORD.test(up[2]))) continue;
       }
       return true;
     }
+  }
+  return false;
+}
+
+// looksSecret, plus unquoted KEY=value secrets: for free text, never for quotes of code.
+function looksSecretText(s) {
+  if (looksSecret(s)) return true;
+  KV_TEXT_RE.lastIndex = 0;
+  let m;
+  while ((m = KV_TEXT_RE.exec(s)) !== null) {
+    const v = m[1];
+    if (/[A-Za-z]/.test(v) && /\d/.test(v) && !SECRET_PLACEHOLDER.test(v)) return true;
   }
   return false;
 }
@@ -500,7 +520,7 @@ function validateVerdict(o) {
   if (!verdict || VERDICTS.indexOf(verdict.toUpperCase()) === -1) return no('BAD_VERDICT');
   const reason = str(o.reason);
   if (!reason || reason.length > MAX_REASON || isPlaceholder(reason)) return no('BAD_REASON');
-  if (looksSecret(reason)) return no('SECRET_IN_REASON');
+  if (looksSecretText(reason)) return no('SECRET_IN_REASON');
   const v = { key, verdict: verdict.toUpperCase(), reason };
   const basis = str(o.basis);
   if (basis && BASES.indexOf(basis.toLowerCase()) !== -1) v.basis = basis.toLowerCase();
@@ -761,7 +781,8 @@ function selftest() {
   const t = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); fails++; } else console.log('ok  :', name); };
   const guard = (name, fn) => { try { fn(); } catch (e) { n++; fails++; console.error('FAIL:', name, '(threw)', e && e.message); } };
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-vi-'));
+  // The real temp path: an 8.3 part in os.tmpdir() (C:\Users\RUNNER~1\...) would trip the short-name rule.
+  const tmp = fs.mkdtempSync(path.join((fs.realpathSync.native || fs.realpathSync)(os.tmpdir()), 'prism-vi-'));
   const repo = path.join(tmp, 'repo');
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.mkdirSync(path.join(repo, 'data'), { recursive: true });
@@ -922,7 +943,11 @@ function selftest() {
     t('secret shapes: quoted literal yes, code and local same-word DSN no',
       sec('API_KEY = "this.Xk29mQ7pL2"') && sec('mysql://deploy:deploy@prod-db.internal/x') && sec('postgres://app:S3cretPassw0rd@localhost/x') &&
       !sec('const DB_PASSWORD = process.env.DB_PASSWORD;') && !sec('SESSION_TOKEN_TTL=86400000') && !sec('ACCESS_KEY: ReadonlyArray<string>') &&
-      !sec('postgres://postgres:postgres@localhost:5432/test') && !sec('PASSWORD = "changeme123"'));
+      !sec('postgres://postgres:postgres@localhost:5432/test') && !sec('PASSWORD = "changeme123"') && !sec('postgres://user:password@localhost:5432/db'));
+    r = G([idea({ problem: 'the committed .env has DB_PASSWORD=Pr0dPassw0rd!' }), idea({ title: 'jwt', effect: 'JWT_SECRET=4f9a1c77de30b2' }),
+      idea({ title: 'ttl', risk: 'SESSION_TOKEN_TTL=86400000 and ACCESS_KEY: ReadonlyArray<string> stay as they are' })]);
+    t('free text: an unquoted .env-style secret makes the idea INVALID; ordinary constants do not',
+      r.ideas[0].reason === 'SECRET_IN_PROBLEM' && r.ideas[1].reason === 'SECRET_IN_EFFECT' && r.ideas[2].status === 'GATED');
 
     let example = '';
     try {
@@ -943,6 +968,8 @@ function selftest() {
     t('a cut-off final fence after a closed draft -> degraded, no ideas', r.degraded === true && r.ideas.length === 0 && /cut off/.test(r.note));
     r = gate(`${fence([idea({ title: 'draft' })])}\n${fence([idea({ title: 'final', cost_note: '<one line>' }), idea({ title: 'final 2', replaces: '<LegacyModal>' })])}`, 'claude', env);
     t('a final fence with a few unfilled placeholders is still the answer (not an echo)', r.ideas.every((i) => i.title !== 'draft') && r.ideas.length === 2);
+    r = gate(`${fence([idea({ title: 'real one' })])}\n${fence(['{"lens":"<class|route|subtract>", ...}'])}`, 'claude', env);
+    t('an abbreviated (non-JSON) copy of the example after the answer is still an echo', r.ideas.length === 1 && only(r).title === 'real one');
     r = gate(`${IDEAS_BEGIN}\n${END}\n${fence(['garbage'])}`, 'claude', env);
     t('an empty fence followed by a garbage fence is not clean', r.clean === false && r.degraded === true);
 
