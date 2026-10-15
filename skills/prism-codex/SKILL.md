@@ -1,7 +1,7 @@
 ---
 name: prism-codex
 description: Codex-backed evidence-graded code review. Like prism but the 5 discovery agents + Evidence pass are all Codex CLI (gpt-5.5). Statuses SUSPECTED → SUPPORTED → REPRODUCED; agreement prioritizes, evidence confirms. --redteam adds an attacker-mindset lens. Design docs get the design lens set (pair with /triad for writing quality). Use when you want different-model opinions or Claude tokens are scarce. Triggers on "/prism-codex <target>", "prism codex로", "codex prism".
-argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--redteam] [--include-improvements] [--lenses=design] [--format json] [--artifacts=temp|docs]"
+argument-hint: "<target> [--quick] [--adversarial] [--reproduce] [--redteam] [--no-ideas] [--include-improvements] [--lenses=design] [--format json] [--artifacts=temp|docs]"
 user-invocable: true
 ---
 
@@ -10,10 +10,11 @@ user-invocable: true
 > 메인은 Claude (오케스트레이터). 5 discovery + Evidence pass는 **모두 Codex CLI** (gpt-5.5). 목적: Claude self-bias 회피 + Claude 토큰 절약. **합의는 우선순위, 확정은 코드 접지.**
 
 이 skill 디렉토리의 파일: `codex-run.sh`(Codex 호출 계약을 코드로 — preamble·stdin·가드·timeout·scrub·파싱),
-`parse-findings.js`, `verify-evidence.js`(결정론 스크립트),
+`parse-findings.js`, `verify-evidence.js`, `verify-ideas.js`(결정론 스크립트),
+`templates/`(아이디어 pass의 프롬프트·출력 계약),
 `references/codex-invocation.md`(왜 그런 계약인지 — 불변식·fallback 정책·사건 기록, 렌즈가 degraded일 때만 읽는다),
 `references/record-v2.md`(finding 스키마 + confidence 표), `references/redteam-lens.md`,
-`references/design-lenses.md`(문서용 design 렌즈셋). 참조 파일은 아래 단계가 지시할 때만 읽는다.
+`references/design-lenses.md`(문서용 design 렌즈셋), `references/ideas.md`(아이디어 pass 규칙·실패 처리). 참조 파일은 아래 단계가 지시할 때만 읽는다.
 
 ## 핵심 가치
 
@@ -32,8 +33,8 @@ user-invocable: true
 | 5. **Testability & Observability** | 삼켜진 예외·조용한 폴백·거짓 로그·신호 없는 실패 |
 
 - `--redteam` → 6번째 **Red Team** 렌즈. 프롬프트 `references/redteam-lens.md`. ATTACK CHAINS·CHECKLIST COVERAGE 섹션 추가.
-- `--include-improvements` → **Improvement** 렌즈 추가(분리 집계).
-- **문서·설계·계획 대상은 DESIGN 렌즈셋 자동** (`--lenses=design`으로 강제, `classic`은 별칭): Conflict & Reuse / Claim Accuracy / Devil's Advocate / Robustness 4축 / Improvement. 프롬프트는 `references/design-lenses.md`. prism은 "설계가 맞는가", `/triad`는 "문서로서 잘 쓰였는가" — `/ddaro:review`가 둘 다 돌린다. 헤더에 `Lenses: defect|design (auto|explicit)` 표기.
+- 대안은 렌즈가 아니라 **아이디어 pass**(Pass 4)에서 나온다.
+- **문서·설계·계획 대상은 DESIGN 렌즈셋 자동** (`--lenses=design`으로 강제, `classic`은 별칭): Conflict & Reuse / Claim Accuracy / Devil's Advocate / Robustness 4축. 프롬프트는 `references/design-lenses.md`. prism은 "설계가 맞는가", `/triad`는 "문서로서 잘 쓰였는가" — `/ddaro:review`가 둘 다 돌린다. 헤더에 `Lenses: defect|design (auto|explicit)` 표기.
 - **프로젝트 보안 체크리스트**: Pass 1 전에 `docs/security-checklist.md` → `docs/security/checklist.md` → `SECURITY.md` → `docs/SECURITY.md` 첫 파일(≤3 tool call) → **Security·Red Team 렌즈에만** 전달.
 
 ## 전제 (Prerequisite)
@@ -46,12 +47,13 @@ Codex는 **read-only 샌드박스**로 돈다(읽기만, 쓰기·네트워크 �
 
 | 형태 | 모드 |
 |---|---|
-| `/prism-codex <target>` | 기본 — 5 discovery + Evidence pass(전 후보 접지) |
-| `--quick` | Evidence pass 생략 — 전부 `SUSPECTED` |
+| `/prism-codex <target>` | 기본 — 5 discovery + Evidence pass(전 후보 접지) + 아이디어 pass(Pass 4) |
+| `--quick` | Evidence pass 생략 — 전부 `SUSPECTED`, 아이디어 pass도 생략 |
 | `--adversarial` | REJECT 확정 전 반대 주장 |
 | `--reproduce` | + 재현 pass(SUPPORTED CRIT/HIGH 우선, 최대 5건, prism 공통 규약) |
 | `--redteam` | + Red Team 렌즈 |
-| `--include-improvements` | Improvement 렌즈 추가 |
+| `--no-ideas` | 아이디어 pass(Pass 4) 생략 |
+| `--include-improvements` | 옛 명령용 별칭으로 남겨 둠 — 아이디어는 기본으로 켜져 있다 |
 | `--lenses=design` | DESIGN 렌즈셋 강제 (markdown 대상은 자동, `classic`은 별칭) |
 | `--format json` | record v2를 `prism-report.json`으로도 출력 |
 | `--artifacts=temp` (기본) / `docs` | 산출물 위치(`docs`는 .gitignore 필수) |
@@ -76,7 +78,7 @@ bash "<skill dir>/codex-run.sh" discovery <run-dir> <angle> --target <file> [--t
 EOF
 ```
 
-`<angle>`: `correctness|security|state|integration|testability|redteam|improvement` (design: `conflict|claim-accuracy|devil|robustness|improvement`). 스크립트의 조립 순서: Preamble → ① target 전문(모든 렌즈 동일 → 공통 prefix) → ② 체크리스트(`security`·`redteam`만, 다른 angle이면 버린다) → ③ 렌즈 정의 → ④ 출력 계약. stdout = 요약 1줄(`status=ok|degraded(<사유>)|secret-scrubbed findings=N`) + 파서 JSON. 실패한 렌즈도 exit 0 + `degraded:true` — 라운드는 계속된다. exit 2 = 인자·설정·설치 오류 또는 같은 angle이 아직 실행 중(고친 뒤 다시 실행, 다른 모델로 재시도하지 않는다). exit 130 = 중단(마커와 DEGRADED JSON은 남는다). 재시도는 `timeout`·`codex-unavailable`·`no-last-message`만 1회. `codex-output-contained-secret-pattern`·`prompt-modified-during-run`·`scan-failed`는 보안 사건 — 자동 재시도 금지, 사용자에게 알린다(다음 실행 때 이전 마커는 `*.incident.*`로 보존된다). 사유별 처리는 `references/codex-invocation.md` §Fallback policy.
+`<angle>`: `correctness|security|state|integration|testability|redteam` (design: `conflict|claim-accuracy|devil|robustness`). 스크립트의 조립 순서: Preamble → ① target 전문(모든 렌즈 동일 → 공통 prefix) → ② 체크리스트(`security`·`redteam`만, 다른 angle이면 버린다) → ③ 렌즈 정의 → ④ 출력 계약. stdout = 요약 1줄(`status=ok|degraded(<사유>)|secret-scrubbed findings=N`) + 파서 JSON. 실패한 렌즈도 exit 0 + `degraded:true` — 라운드는 계속된다. exit 2 = 인자·설정·설치 오류 또는 같은 angle이 아직 실행 중(고친 뒤 다시 실행, 다른 모델로 재시도하지 않는다). exit 130 = 중단(마커와 DEGRADED JSON은 남는다). 재시도는 `timeout`·`codex-unavailable`·`no-last-message`만 1회. `codex-output-contained-secret-pattern`·`prompt-modified-during-run`·`scan-failed`는 보안 사건 — 자동 재시도 금지, 사용자에게 알린다(다음 실행 때 이전 마커는 `*.incident.*`로 보존된다). 사유별 처리는 `references/codex-invocation.md` §Fallback policy.
 
 공통 계약: **"너는 의심을 생산한다 — 확정은 Evidence pass의 일. LOCUS는 `file:lines@symbol`, `|` 금지."**
 
@@ -118,11 +120,36 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 > 7. `SUPPORTED`마다 `suggested_test`. 8. 합쳐져 더 큰 결과가 되는 후보는 같은 `chain` id.
 > 포맷: 후보당 record v2 1건을 `<<<PRISM-RECORDS v2>>>` ~ `<<<END>>>` 펜스에 한 줄 JSON(스키마 `references/record-v2.md`). `evidence_strength`: NONE/WEAK/MEDIUM.
 
-**기계 검증(불변)**: `node verify-evidence.js records.json <repo-root> > checked.json` — 인용 불일치 → `SUSPECTED(EVIDENCE_QUOTE_MISMATCH)` 자동 강등, fingerprint 코드 계산. **checked.json이 최종 진실.**
+**기계 검증(불변)**: `node verify-evidence.js <run-dir>/records.json <repo-root> > <run-dir>/checked.json` — 인용 불일치 → `SUSPECTED(EVIDENCE_QUOTE_MISMATCH)` 자동 강등, fingerprint 코드 계산. **checked.json이 최종 진실.**
 
 `--adversarial`: REJECT 전 반대 주장 먼저 — 반박이 더 구체적·근거 우위일 때만 REJECT.
 
 `--reproduce`: prism 공통 규약 — 기계 검증 통과 SUPPORTED, CRIT/HIGH 우선 최대 5건, **stripped env·cwd=임시 디렉토리·프로젝트 트리 쓰기 금지·러너 설치 금지·실패 시그니처 사전 등록·per-test 60s·2회 연속 동일·운영자 confirm 1회·출력 로그에 `codex-run.sh scrub`(exit 3 = 치환됨)**. 분류: REPRODUCED / NOT_REPRODUCIBLE_IN_CURRENT_ENVIRONMENT(setup/import 에러 포함) / TIMED_OUT / STATIC_EVIDENCE_ONLY / REQUIRES_EXTERNAL_SERVICE / REQUIRES_DOMAIN_CONFIRMATION. 자작 통과 테스트는 최대 SUSPECTED까지만 강등.
+
+---
+
+## Pass 4 — 아이디어 (기본 ON; `--quick`·`--no-ideas`면 OFF)
+
+렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"에 답한다 — 아이디어 렌즈당 최대 3개의 근거 있는 대안을 스크립트가 gate하고, 쓰지 않은 checker가 판정한다. Pass 2/3 뒤에, 코드·설계 대상 모두에서 돈다. 규칙·gate 검사·실패 처리는 `references/ideas.md`(단계가 degraded일 때만 읽는다). **프롬프트를 손으로 쓰지 않는다** — Codex 프롬프트는 `codex-run.sh ideas|idea-check`가 `verify-ideas.js prompt`로 만들고, 계약·판정도 손대지 않는다. 아이디어는 결함 카운트·액션 순서·degraded angle·어떤 게이트에도 들어가지 않는다.
+
+- `<repo-root>` = `git rev-parse --show-toplevel`, 아니면 대상들의 공통 디렉터리(`verify-evidence.js`가 받는 것과 같은 루트). `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수). `codex-run.sh ideas|idea-check`가 exit 2면 인자 오류다 — 고치고 다시 돌린다(모델 문제가 아니다).
+- `<findings>` = `--findings <run-dir>/checked.json`, **최종** checked.json. `--reproduce`면 Pass 3 이후 record로 `verify-evidence.js`를 다시 돌려 `<run-dir>/checked.json`에 먼저 쓴다. 후보 0건(Pass 2 스킵)이면 `<findings>`를 뺀다.
+- `<targets>` = 렌즈가 읽은 파일마다 `--target <file>` (discovery와 같은 목록).
+- Codex 콜은 Bash 1개씩 순차, Bash `timeout`은 discovery와 같다((`PRISM_CODEX_TIMEOUT`+30)×1000 ms). 재시도·fallback도 discovery와 같은 정책.
+
+```bash
+# 1. 제안 (Codex 1콜) → 답: <run-dir>/pass4.codex.ideas.codex.txt
+bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas --root <repo-root> <targets> <findings>
+# 2. gate
+node "<skill dir>/verify-ideas.js" gate <run-dir>/pass4.codex.ideas.codex.txt codex <repo-root> <findings> <targets> > <run-dir>/codex.gated.json
+# 3. 검사 — counts.gated가 0이면(근거 없음 또는 degraded: true) 건너뛰고 4로(rank가 gate 출력을 받는다).
+#    배치 N = 1..⌈counts.gated/8⌉, 배치당 Bash 1개(새 Codex 콜 = 제안자와 분리된 checker)
+bash "<skill dir>/codex-run.sh" idea-check <run-dir> check-codex-N --gated <run-dir>/codex.gated.json <findings> --batch N
+node "<skill dir>/verify-ideas.js" check <run-dir>/codex.gated.json <run-dir>/pass4.codex.check-codex-1.codex.txt <repo-root> [--also <run-dir>/pass4.codex.check-codex-N.codex.txt]... <targets> > <run-dir>/codex.checked-ideas.json
+# 4. 순위 + 렌더 (엔진 1개라 groups 없음)
+node "<skill dir>/verify-ideas.js" rank <run-dir>/codex.checked-ideas.json > <run-dir>/ideas.json
+node "<skill dir>/verify-ideas.js" render <run-dir>/ideas.json
+```
 
 ---
 
@@ -132,17 +159,20 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 PRISM-CODEX REPORT — {target} — {timestamp}
 Mode: {default | quick | adversarial} [+reproduce] [+redteam] · Lenses: defect | design {+redteam} ({auto|explicit})
 Engine: Codex CLI (gpt-5.5) {n}/5 · Checklist: {path | none}
+Ideas: on (codex) | off (--no-ideas | --quick)
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
 ## REPRODUCED / ## SUPPORTED / ## SUSPECTED / ## REJECTED
 - PRISM-001 [HIGH|security|HIGH] file:lines@symbol — claim
   [3/5 agreement] evidence: file:line — 인용 (verified) | repro: STATIC_EVIDENCE_ONLY | suggested_test: ... | checklist: #14
 ## ATTACK CHAINS (--redteam 또는 chain 있을 때) / ## CHECKLIST COVERAGE (체크리스트 로드 시)
-## DEGRADED ANGLES / ## IMPROVEMENTS (--include-improvements)
+## DEGRADED ANGLES
 ## Recommended Action Order
+## IDEAS (선택지이지 task가 아니다; --no-ideas / --quick이면 없음)
+<`node "<skill dir>/verify-ideas.js" render <run-dir>/ideas.json` 출력 그대로>
 ```
 
-`[N/5 agreement]`는 우선순위 신호. 단일 모델이므로 합의만으로 MEDIUM 상한. `--quick`: 전부 SUSPECTED. `--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-codex/<slug>-<run-id>/`) 원자적 출력.
+`[N/5 agreement]`는 우선순위 신호. 단일 모델이므로 합의만으로 MEDIUM 상한. `--quick`: 전부 SUSPECTED. `--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-codex/<slug>-<run-id>/`) 원자적 출력. `findings`·`meta.counts`는 아이디어 pass와 무관하게 그대로이고, 최상위 `ideas`(= `ideas.json`의 `.ideas`)와 `meta.ideas`(= `ideas.json`의 `.meta` + `"ran": true`)를 더한다. pass를 안 돌렸으면 `"ideas": []`, `meta.ideas` = `{"ran": false, "reason": "--no-ideas" | "--quick"}`.
 
 ---
 
@@ -154,6 +184,8 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 | default | 5 | ⌈후보/8⌉ chunked | 0 | 1.2~1.5× |
 | `--redteam` | 6 | ⌈후보/8⌉ | 0 | +0.25× |
 | `--reproduce` | 5 | ⌈후보/8⌉ | ≤5 | 1.5~2.2× |
+| 아이디어 pass (Pass 4, 기본) | +1 Codex proposer 콜 | +⌈아이디어/8⌉ checker 콜 | 0 | 순차 Codex 콜만큼 wall time 증가 |
+| `--quick` / `--no-ideas` | — | — | — | 아이디어 pass 0 |
 
 Claude 토큰은 오케스트레이션분만 소비. target을 작게(변경 범위로) 넘기는 것이 가장 큰 절약. 프롬프트는 target 먼저·렌즈 나중.
 
@@ -182,4 +214,5 @@ node verify-independence.js --strict
 - ❌ 재현 테스트를 프로젝트 트리에 / env 안 스트립 / 러너 설치
 - ❌ `codex exec`를 직접 호출하거나 자체 실행 스크립트를 만듦 — preamble·scrub·출력 계약이 빠진다. Codex는 `codex-run.sh`로만
 - ❌ 문서의 글 품질(명확성·온보딩)을 prism에 기대함 — 그건 `/triad`. design 렌즈는 설계 건전성만 본다
+- ❌ 아이디어를 결함처럼 다룸 — IDEAS는 액션 순서·카운트·게이트에 들어가지 않는다
 - ❌ 다른 plugin/skill 파일 런타임 참조

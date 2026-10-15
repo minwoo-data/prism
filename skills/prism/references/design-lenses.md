@@ -11,8 +11,8 @@ A design doc, PRD, plan or spec can be reviewed on two independent questions:
 | Is the **design sound**? Does it conflict with what exists, fail under load or partial failure, make false claims about the current code? | **prism, design lens set** (this file) |
 | Is the **document well written**? Will a future LLM act on it correctly, will it age well, can a newcomer get it in 5 minutes? | **triad** (LLM clarity / architecture longevity / end-user comprehension) |
 
-`/ddaro:review` runs both on the same design doc (5 + 3 agents). Run either alone when only one
-question matters.
+`/ddaro:review` runs both on the same design doc (4 + 3 agents, then prism's idea pass). Run either
+alone when only one question matters.
 
 The set is selected automatically when the majority of target bytes are markdown/design/plan
 text; `--lenses=design` forces it. `--lenses=classic` is accepted as an alias (it was the 0.1–0.3.0
@@ -25,7 +25,7 @@ Accuracy**.
 
 ## Lens prompts
 
-Every lens gets the same output contract as the defect lenses (`<<<PRISM-FINDINGS v1>>>`, SEV ∈
+The set is 4 lenses. Every lens gets the same output contract as the defect lenses (`<<<PRISM-FINDINGS v1>>>`, SEV ∈
 CRIT|HIGH|MED|LOW, pipe-free LOCUS, real block as the last fence). LOCUS for a design finding is
 `<doc>:<lines>@<section heading>`, or the repository `file:lines@symbol` when the finding is about
 existing code.
@@ -49,18 +49,19 @@ existing code.
    orphaned state; (3) Data Integrity — FK cascade direction, unique/CHECK constraints, upsert vs
    replace, schema/version mismatch, migration path; (4) State Transitions — every reachable state,
    forbidden/terminal/re-entry transitions."
-5. **Improvement** — "Suggest concrete enhancements to the design. For each: current plan →
-   proposed change → rationale. Prefer simplifications and reuse over additions." In the design
-   set this lens is on by default (a design review should surface alternatives); its findings stay
-   `category: improvement` and are listed separately from defects.
+
+The fifth slot (Improvement) is retired in 0.5.0. Alternatives to the design now come from the idea
+pass (Pass 4, `references/ideas.md`), which also runs on design targets: its ideas are grounded,
+checked by a second engine or agent, and kept out of the defect sections.
 
 The **Red Team** lens (`--redteam`) can be added to a design review the same way as to a code
 review — useful for an auth/payments/PII design before any code exists.
 
 ## Category mapping (record v2)
 
-conflict→integration, claim-accuracy→correctness, devil→correctness, robustness→state,
-improvement→improvement. (Old `code-review` findings from ≤0.3.0 reports map to correctness.)
+conflict→integration, claim-accuracy→correctness, devil→correctness, robustness→state. (Old
+`code-review` findings from ≤0.3.0 reports map to correctness; `improvement` records from ≤0.4
+reports have no 0.5 category.)
 
 ## Evidence and confidence on a design target
 
