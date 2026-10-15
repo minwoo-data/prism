@@ -116,6 +116,16 @@ function loose(s) {
   return String(s).replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+// The quote matcher, shared with verify-ideas.js so idea grounds are checked by the exact same
+// rule as evidence quotes: the cited lines +/-CTX, loosely joined, must contain the quote.
+function quoteWindow(srcLines, range) {
+  const from = Math.max(1, range[0] - CTX), to = Math.min(srcLines.length, range[1] + CTX);
+  return { from, to, text: loose(srcLines.slice(from - 1, to).join(' ')) };
+}
+function quoteInWindow(windowText, quote) {
+  return windowText.indexOf(loose(quote)) !== -1;
+}
+
 function checkOne(rec, repoRoot) {
   const out = Object.assign({}, rec);
   out.confidence = Object.assign({}, rec.confidence);
@@ -152,13 +162,12 @@ function checkOne(rec, repoRoot) {
   if (range[0] < 1 || range[1] > srcLines.length) return downgrade('LINES_OUT_OF_RANGE');
 
   // Gather the cited window (+/- context) and check each evidence quote against it.
-  const from = Math.max(1, range[0] - CTX), to = Math.min(srcLines.length, range[1] + CTX);
-  const windowText = loose(srcLines.slice(from - 1, to).join(' '));
+  const { from, to, text: windowText } = quoteWindow(srcLines, range);
   const evList = Array.isArray(rec.evidence) ? rec.evidence : (rec.evidence ? [rec.evidence] : []);
   if (evList.length === 0) return downgrade('EVIDENCE_EMPTY');
 
   const quotes = evList.map(quoteFromEvidence).filter((q) => q.length >= 3);
-  const anyFound = quotes.some((q) => windowText.indexOf(loose(q)) !== -1);
+  const anyFound = quotes.some((q) => quoteInWindow(windowText, q));
   if (!anyFound) return downgrade('EVIDENCE_QUOTE_MISMATCH');
 
   // Verified. REPRODUCED keeps STRONG only if reproduction actually ran+reproduced.
@@ -223,15 +232,19 @@ function selftest() {
   process.exit(fails ? 1 : 0);
 }
 
-const args = process.argv.slice(2);
-if (args[0] === '--selftest') {
-  selftest();
-} else {
-  const file = args[0];
-  const repoRoot = args[1] || process.cwd();
-  let text = '';
-  try { text = file ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8'); } catch (_) { text = ''; }
-  let records = [];
-  try { records = JSON.parse(text); } catch (_) { records = []; }
-  process.stdout.write(JSON.stringify(run(records, repoRoot), null, 2));
+module.exports = { CTX, NL, GROUNDED, parseLines, quoteFromEvidence, loose, quoteWindow, quoteInWindow, run };
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args[0] === '--selftest') {
+    selftest();
+  } else {
+    const file = args[0];
+    const repoRoot = args[1] || process.cwd();
+    let text = '';
+    try { text = file ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8'); } catch (_) { text = ''; }
+    let records = [];
+    try { records = JSON.parse(text); } catch (_) { records = []; }
+    process.stdout.write(JSON.stringify(run(records, repoRoot), null, 2));
+  }
 }
