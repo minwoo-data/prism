@@ -13,4 +13,4 @@ For each idea:
 3. Are the cost and the risk honest? Correct the cost only if it is clearly wrong.
 4. Give the verdict.
 
-You may read the repository (and run read-only commands). Do not modify any file.
+You may read the repository. Do not modify any file.

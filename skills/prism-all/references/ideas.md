@@ -38,22 +38,26 @@ ground nothing.
 One idea agent per engine runs all three lenses, so the target travels once per engine.
 
 ```
-node "<skill dir>/verify-ideas.js" prompt propose --target <file>... [--findings checked.json] \
+node "<skill dir>/verify-ideas.js" prompt propose --root <repo-root> --target <file>... [--findings checked.json] \
      [--context <file>]... > <run-dir>/pass4.claude.ideas.prompt.txt     # Claude agent reads this
-bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas --target <file>... [--findings checked.json] \
-     [--context <file>]...                                               # Codex: same prompt + preamble
+bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas --root <repo-root> --target <file>... \
+     [--findings checked.json] [--context <file>]...                     # Codex: same prompt + preamble
 ```
 
-The builder refuses credential files and network paths, and assembles the prompt in this order:
+The builder refuses credential files, network paths, a `--target` inside the root that a link
+takes outside it, and a findings file in which no record was machine-checked (`records.json`
+instead of `checked.json`). The prompt opens with `Repository root: <root>. Quote repository files
+by their path relative to it.`; every file block is headed by its root-relative path (forward
+slashes), or its absolute path when it lies outside the root, so a quote copied from a header
+resolves in the gate. Then, in this order:
 
 1. **Target content**, verbatim (the same prefix the discovery lenses got).
 2. **FINDINGS** (companion mode only): every `SUPPORTED` / `REPRODUCED` record of the final
-   `checked.json`, one line each: `PRISM-NNN | STATUS | SEV | file:lines | claim`. Standalone mode
-   has none.
+   `checked.json`, one line each: `PRISM-NNN | STATUS | SEV | file:lines | claim`. Every field is
+   flattened to one line; a severity outside CRIT/HIGH/MED/LOW or a malformed line range prints
+   `?`, and a secret-shaped claim prints `[claim withheld: secret-shaped]`. Standalone mode has none.
 3. **CONTEXT** files (`--context`), each headed `CONTEXT: <name as given>`. Data an idea needs as
-   ground (exported sheets, logs, measurements) must arrive this way so its quote can be checked. A
-   target that lives **outside the repository root** (another drive, a temp diff-context file) is
-   passed as `--context` too; otherwise every quote of it is `PATH_OUTSIDE_ROOT`.
+   ground (exported sheets, logs, measurements) must arrive this way so its quote can be checked.
 4. **`templates/ideas-prompt.md`**: the three lenses (class: fix the class; route: a different
    route; subtract: remove or reuse) and the rubric.
 5. **`templates/ideas-contract.md`**, appended last.
@@ -65,8 +69,9 @@ node "<skill dir>/verify-ideas.js" gate <proposer-out> <claude|codex> <repo-root
      [--findings checked.json] [--target <file>]... [--context <file>]... > <engine>.gated.json
 ```
 
-Pass the same `--target` and `--context` files the prompt got: both are quotable grounds, so a
-target outside the repository root still verifies.
+Pass the same `--target` and `--context` files the prompt got. A `--target` whose path, as
+written, is outside the repository root is a quotable ground like a `--context` file; one inside
+it is a repo file, and a link inside the root that leads outside stays `PATH_OUTSIDE_ROOT`.
 
 Enforced in code:
 - **Which fence:** the last closed `PRISM-IDEAS v1` fence. Only an echoed contract example is
@@ -84,7 +89,10 @@ Enforced in code:
   `codex-run.sh` refuses, checked on the real path), `.git`/`.hg`/`.svn` internals and
   secret-shaped text: a known token format, credentials in a URL, or a secret-named key with a
   quoted literal (an unquoted value is code that only names a secret, and a local test DSN whose
-  user and password are the same word is fine). A quote is matched against every file its path can mean (a `--context`
+  user and password are the same word is fine). In a `--context` file or a data/config file
+  (`.env`-like, `.yml`/`.yaml`, `.ini`, `.toml`, `.properties`, `.conf`, `.cfg`, `.log`, `.txt`,
+  `.csv`, `.json`) an unquoted `KEY: value` secret counts too: there a value is data, not a name.
+  A quote is matched against every file its path can mean (a `--context`
   file named that way and the repo file), so neither shadows the other; a `--context` basename
   counts only when nothing else matched.
 - No valid ground, or a `problem` that names an unverified finding, makes the idea `UNGROUNDED`.
@@ -103,7 +111,9 @@ An independent checker rates every `GATED` idea. It sees the ideas (key, lens, t
 verified grounds, proposal, replaces, cost, effect, risk) and the findings they cite, and has
 Read/Grep/Glob on the repository, but not the proposer's reasoning. Batches of at most 8 ideas per
 call; `prompt check` prints which batch it built and how many there are (`check batch 1/2: ...`
-on stderr). No GATED idea: skip the check (rank takes the gate output then).
+on stderr) and needs `--batch N` when there is more than one. Every finding the batch cites must be
+confirmed in the `--findings` file, or the builder stops (pass the file the gate used). No GATED
+idea: skip the check (rank takes the gate output then).
 
 ```
 node "<skill dir>/verify-ideas.js" prompt check --gated <engine>.gated.json [--findings checked.json] \
@@ -178,10 +188,17 @@ The section is rendered by code, never written by hand:
 node "<skill dir>/verify-ideas.js" render ideas.json
 ```
 
-It prints the header line (`Ideas: N proposed -> G grounded -> k keep, w weak, d drop, u unchecked
-(merged, ungrounded, over cap, invalid)`), a `Degraded (infra, not ideas):` line when a proposer
-failed or a checker answered nothing or only part, one entry per idea
+It prints an `Engines:` line (each engine that ran, `(degraded)` when its proposer failed), the
+header line (`Ideas: N proposed -> G grounded -> k keep, w weak, d drop, u unchecked (merged,
+ungrounded, over cap, invalid, bad lines, overflow)`, non-zero ones only), an `Excluded:` tally of
+why ideas left before the check (`UNGROUNDED:NO_VALID_GROUND 2, OVER_CAP 1`), a
+`Degraded (infra, not ideas):` line when a proposer failed (with the gate's note, e.g. `no
+PRISM-IDEAS v1 fence; fallback: claude-unavailable`), a checker answered nothing or only part, a
+check batch failed, or verdicts named unknown keys; then one entry per idea
 (`- IDEA-1 [cross-model | route | cost M | KEEP: worth doing] <title>` plus problem, replaces,
 proposal, effect, risk, grounds with their strength, and the checker's reason), and the checker's
-drops. Certainty language follows the verdict: `KEEP` "worth doing", `WEAK` "worth a look",
-`UNCHECKED` "not checked". Model text is flattened and made inert (no HTML, images or mentions).
+drops. With no idea left it says `- none: the proposers failed (see Degraded)` when every proposer
+degraded, else `- none: no idea survived the gate and the check`. Certainty language follows the
+verdict: `KEEP` "worth doing", `WEAK` "worth a look", `UNCHECKED` "not checked". Model text is
+flattened, re-checked for secrets (`[withheld: secret-shaped]`) and made inert: no HTML, images,
+links (`[` and `]` escaped), mentions or `owner/repo#N` references (a zero-width space breaks them).

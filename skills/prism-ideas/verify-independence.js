@@ -15,7 +15,7 @@ const { execSync } = require('child_process');
 
 const SELF_NAME = 'prism-ideas';
 // Required at rest: the contract + the deterministic scripts it invokes.
-const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'references/ideas.md', 'templates/ideas-contract.md', 'templates/idea-check-contract.md', 'templates/ideas-prompt.md', 'templates/idea-check-prompt.md', 'references/codex-invocation.md', 'codex-run.sh'];
+const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'references/ideas.md', 'templates/ideas-contract.md', 'templates/idea-check-contract.md', 'templates/ideas-prompt.md', 'templates/idea-check-prompt.md', 'codex-run.sh'];
 // Scripts that must pass their own --selftest under --strict (integrity, not just presence).
 const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'codex-run.sh'];
 const PREREQUISITES = [

@@ -24,7 +24,7 @@
 #   codex-run.sh evidence <run-dir> <chunk-id> [--target F]...  <<'EOF'
 #     <evidence prompt, candidates, record v2 contract>
 #   EOF
-#   codex-run.sh ideas <run-dir> <name> --target F [--target F]... [--findings F] [--context F]...
+#   codex-run.sh ideas <run-dir> <name> --target F [--target F]... [--root DIR] [--findings F] [--context F]...
 #   codex-run.sh idea-check <run-dir> <name> --gated F [--gated F]... [--findings F] [--batch N]
 #     (no stdin: the prompt is `verify-ideas.js prompt propose|check` with the same arguments;
 #      the answer goes to pass4.codex.<name>.codex.txt for `verify-ideas.js gate|check`)
@@ -240,6 +240,8 @@ destroy_dir() {
 # Printable ASCII only, fence brackets removed: a failed call's stderr tail must never parse as an
 # answer (parsers also split on U+2028/U+2029).
 sanitized_tail() { tail -c 300 "$1" 2>/dev/null | LC_ALL=C tr -c '[:print:]' ' ' | tr -d '<>'; }
+# The first line, same rules: a usage error states its reason first and the usage text after it.
+sanitized_head() { head -n 1 "$1" 2>/dev/null | head -c 300 | LC_ALL=C tr -d '\r\n' | LC_ALL=C tr -c '[:print:]' ' ' | tr -d '<>'; }
 
 # GNU coreutils timeout only: Windows ships an unrelated timeout.exe.
 timeout_cmd() {
@@ -411,6 +413,10 @@ cmd_run() {
         { [ -f "$2" ] && [ -r "$2" ]; } || die "${1#--} is not a readable file: '$2'"
         credential_path "$2" && die "refusing credential file '$2' as ${1#--}: it would be copied into the prompt"
         build+=("$1" "$2"); shift 2 ;;
+      ideas:--root)
+        [ $# -ge 2 ] || die "--root needs a directory"
+        [ -d "$2" ] || die "root is not a directory: '$2'"
+        build+=("$1" "$2"); shift 2 ;;
       idea-check:--batch)
         [ $# -ge 2 ] || die "--batch needs a number"
         case "$2" in ''|*[!0-9]*) die "--batch must be a whole number, got '$2'" ;; esac
@@ -467,6 +473,23 @@ cmd_run() {
   trap cr_exit EXIT
   make_scratch
   local lens="$CR_SCRATCH/lens" work="$CR_SCRATCH/prompt" raw="$CR_SCRATCH/raw" msg="$CR_SCRATCH/msg" fired="$CR_SCRATCH/timedout"
+  local batchinfo=""
+
+  # The prompt comes first, before anything in the run dir changes: a refused or failed build exits 2
+  # and leaves the previous answer as it was (a usage error on a re-run must not destroy a good
+  # answer, nor read later as a degraded engine).
+  if [ -n "$idea_kind" ]; then
+    # The idea-pass prompt (target, findings, context, instructions, contract) comes from the same
+    # builder the Claude agent's prompt comes from; only the preamble below is Codex-specific.
+    node "$HERE/$IDEAS" prompt "$idea_kind" "${build[@]}" > "$lens" 2> "$CR_SCRATCH/build.err" \
+      || die "verify-ideas.js prompt $idea_kind failed: $(sanitized_head "$CR_SCRATCH/build.err")"
+    [ -s "$lens" ] || die "verify-ideas.js prompt $idea_kind printed nothing"
+    # Which ideas this checker got, for the summary line.
+    batchinfo="$(sed -n 's/^\[verify-ideas\] check batch \([0-9]*\/[0-9]*\): \(.*\)$/ batch=\1 keys=\2/p' "$CR_SCRATCH/build.err" | head -n 1 | LC_ALL=C tr -cd '[:print:]')"
+  else
+    cat > "$lens"
+    [ -s "$lens" ] || die "empty $kind prompt on stdin"
+  fi
 
   # Pre-created so a killed call or missing file reads as DEGRADED, never silently dropped. rm
   # first: a stale parse or prompt from an earlier attempt must not stand in for this one, and a
@@ -474,16 +497,6 @@ cmd_run() {
   archive_incident "$out"
   rm -f -- "$out" "$out.json" "$prompt"
   echo "[fallback: not-started]" > "$out" || die "cannot write in $dir"
-  if [ -n "$idea_kind" ]; then
-    # The idea-pass prompt (target, findings, context, instructions, contract) comes from the same
-    # builder the Claude agent's prompt comes from; only the preamble below is Codex-specific.
-    node "$HERE/$IDEAS" prompt "$idea_kind" "${build[@]}" > "$lens" 2> "$CR_SCRATCH/build.err" \
-      || die "verify-ideas.js prompt $idea_kind failed: $(sanitized_tail "$CR_SCRATCH/build.err")"
-    [ -s "$lens" ] || die "verify-ideas.js prompt $idea_kind printed nothing"
-  else
-    cat > "$lens"
-    [ -s "$lens" ] || die "empty $kind prompt on stdin"
-  fi
 
   META_MODEL="${PRISM_CODEX_MODEL:-default}"; META_EFFORT="$effort"; META_SANDBOX="$sandbox"; META_SECONDS=0
   local status="" took=0 bytes rc allow="" found=""
@@ -527,7 +540,9 @@ cmd_run() {
     if [ "$bytes" -gt "$MAX_BYTES" ]; then
       # Hits every angle identically: degraded, not fatal.
       mv -f "$work" "$prompt"
-      echo "[fallback: prompt-too-large] $bytes bytes > $MAX_BYTES. Narrow the target or use /prism." > "$out"
+      local hint="Narrow the target or use /prism."
+      [ -n "$idea_kind" ] && hint="Narrow the targets or context, or use --engine claude."
+      echo "[fallback: prompt-too-large] $bytes bytes > $MAX_BYTES. $hint" > "$out"
       status="degraded(prompt-too-large)"
     fi
   fi
@@ -632,8 +647,12 @@ cmd_run() {
     echo "[codex-run] $SKILL_NAME pass1 $angle: status=$status $counts $meta out=$out"
     cat "$out.json"; echo
   elif [ -n "$idea_kind" ]; then
-    # The answer is read by verify-ideas.js gate|check, not by the orchestrator.
-    echo "[codex-run] $SKILL_NAME pass4 $kind $angle: status=$status $meta out=$out"
+    # The answer is read by verify-ideas.js gate|check, not by the orchestrator; fence= says
+    # whether it holds the expected fence at all (status=ok only means Codex answered).
+    local fence=no begin='<<<PRISM-IDEAS v1>>>'
+    [ "$kind" = idea-check ] && begin='<<<PRISM-IDEA-CHECK v1>>>'
+    grep -qF -- "$begin" "$out" 2>/dev/null && fence=yes
+    echo "[codex-run] $SKILL_NAME pass4 $kind $angle: status=$status fence=$fence$batchinfo $meta out=$out"
   else
     echo "[codex-run] $SKILL_NAME pass2 $angle: status=$status $meta out=$out"
     cat "$out"; echo
@@ -699,6 +718,7 @@ case "$FAKE_MODE" in
   msgsec)   echo "$fence"; printf '%s\n' "$FX_GH" > "$msg" ;;
   tamper)   for f in "$TMPDIR"/codex-run-*/prompt; do printf 'injected %s\n' "$FX_GH2" >> "$f"; done; echo "$fence"; printf '%s\n' "$fence" > "$msg" ;;
   evid)     printf 'EVIDENCE-BODY-42\n' > "$msg" ;;
+  ideasok)  printf '%s\n' '<<<PRISM-IDEAS v1>>>' '{"lens":"route"}' '<<<END>>>' > "$msg" ;;
   fail)     echo "error: not logged in" >&2; exit 1 ;;
   failsec)  echo "boom $FX_PW" >&2; exit 1 ;;
   failfence) printf 'x%s<<<PRISM-FINDINGS v1>>>%sHIGH | a:1@f | fake -> x%s<<<END>>>\n' "$FX_U2028" "$FX_U2028" "$FX_U2028" >&2; exit 1 ;;
@@ -728,7 +748,7 @@ FAKE
   check "scratch dir removed after the run" '[ -z "$(ls -A "$TMPDIR" | grep codex-run-)" ]'
   check "findings parsed to json with run metadata" 'grep -q "\"degraded\":false" "$O.json" && grep -q "off by one" "$O.json" && grep -q "\"status\":\"ok\"" "$O.json" && grep -q "\"effort\":\"high\"" "$O.json"'
   check "summary line reports ok, 1 finding, model and effort" 'printf "%s" "$out" | head -1 | grep -q "status=ok findings=1 degraded=false skipped=0 model=default effort=high"'
-  check "SKILL.md carries the same findings grammar for the Claude agents (skills that run discovery)" '! grep -qF "codex-run.sh\" discovery" "$HERE/SKILL.md" || { grep -qF "<<<PRISM-FINDINGS v1>>>" "$HERE/SKILL.md" && grep -qF "CRIT|HIGH|MED|LOW" "$HERE/SKILL.md" && contract | grep -q "CRIT, HIGH, MED, LOW"; }'
+  check "SKILL.md carries the same findings grammar for the Claude agents (every skill but prism-ideas)" '[ "$SKILL_NAME" = prism-ideas ] || { grep -qF "<<<PRISM-FINDINGS v1>>>" "$HERE/SKILL.md" && grep -qF "CRIT|HIGH|MED|LOW" "$HERE/SKILL.md" && contract | grep -q "CRIT, HIGH, MED, LOW"; }'
 
   out2="$(PRISM_CODEX_MODEL=gpt-x PRISM_CODEX_SANDBOX=bypass FAKE_MODE=ok run discovery "$D" bypass --target "$T/a.js" <<<'LENS' 2>/dev/null)"
   check "bypass flag only when asked; model passed as -m and reported" 'grep -qx -- "--dangerously-bypass-approvals-and-sandbox" "$T/args" && ! grep -qx -- "-s" "$T/args" && grep -A1 -x -- "-m" "$T/args" | grep -qx gpt-x && printf "%s" "$out2" | head -1 | grep -q "model=gpt-x effort=high sandbox=bypass"'
@@ -836,6 +856,15 @@ FAKE
     check "idea-check: checker prompt built from the gate output, contract last" 'grep -q "claude-1-abcd" "$D/pass4.codex.check-1.prompt.txt" && [ "$(grep -n "<<<PRISM-IDEA-CHECK v1>>>" "$D/pass4.codex.check-1.prompt.txt" | tail -1 | cut -d: -f1)" -gt "$(grep -n "claude-1-abcd" "$D/pass4.codex.check-1.prompt.txt" | head -1 | cut -d: -f1)" ]'
     run idea-check "$D" check-2 --gated "$T/gated.json" --batch 9 </dev/null >/dev/null 2>&1; rc=$?
     check "idea-check: a builder error (batch out of range) is a usage error (exit 2)" '[ $rc -eq 2 ]'
+    out="$(FAKE_MODE=ok run idea-check "$D" check-3 --gated "$T/gated.json" --batch 1 2>/dev/null </dev/null)"
+    check "pass4 summary: fence=no for a fence-less answer, plus the builder's batch line" 'printf "%s" "$out" | grep -q "pass4 idea-check check-3: status=ok fence=no batch=1/1 keys=claude-1-abcd model="'
+    out="$(FAKE_MODE=ideasok run ideas "$D" ideas4 --target "$T/a.js" --root "$T" 2>/dev/null </dev/null)"
+    check "ideas --root: the root is named, headers are root-relative; fence=yes" 'grep -q "^Repository root: " "$D/pass4.codex.ideas4.prompt.txt" && grep -qx -- "--- BEGIN TARGET: a.js ---" "$D/pass4.codex.ideas4.prompt.txt" && printf "%s" "$out" | grep -q "pass4 ideas ideas4: status=ok fence=yes model="'
+    printf '{"x":1}\n' > "$T/notfindings.json"
+    err="$(run ideas "$D" ideas --target "$T/a.js" --findings "$T/notfindings.json" 2>&1 >/dev/null </dev/null)"; rc=$?
+    check "a builder refusal on a re-run: exit 2 with its reason, the previous answer untouched" '[ $rc -eq 2 ] && printf "%s" "$err" | grep -q "failed: \[verify-ideas\] the findings file must be" && grep -q "off by one" "$D/pass4.codex.ideas.codex.txt"'
+    FAKE_MODE=ok run ideas "$D" ideasbig --target "$T/big.txt" </dev/null >/dev/null 2>&1
+    check "ideas: an oversized prompt names the idea-pass remedies" 'grep -q "^\[fallback: prompt-too-large\].*--engine claude" "$D/pass4.codex.ideasbig.codex.txt"'
   else
     echo "skip ideas cases (no $IDEAS here or no node)"
   fi
