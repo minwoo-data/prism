@@ -183,15 +183,18 @@ node "<skill dir>/verify-evidence.js" <run-dir>/records.json "<repo-root>" > <ru
 
 렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"에 답한다 — 엔진마다 아이디어 렌즈당 최대 3개의 근거 있는 대안을 내고, 스크립트가 gate하고, **다른 엔진**이 판정한다. Pass 2/3 뒤에, 코드·설계 대상 모두에서 돈다. 규칙·gate 검사·실패 처리는 `references/ideas.md`(단계가 degraded일 때만 읽는다). **프롬프트를 손으로 쓰지 않는다** — Claude 프롬프트는 `verify-ideas.js prompt`, Codex 프롬프트는 `codex-run.sh ideas|idea-check`(같은 빌더 + preamble)만 만들고, 계약·판정도 손대지 않는다. 아이디어는 결함 카운트·액션 순서·degraded angle·어떤 게이트에도 들어가지 않는다.
 
+- `<repo-root>` = `git rev-parse --show-toplevel`, 아니면 대상들의 공통 디렉터리(`verify-evidence.js`가 받는 것과 같은 루트). `prompt propose`와 `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수).
 - `<findings>` = `--findings <run-dir>/checked.json`, **최종** checked.json. `--reproduce`면 Pass 3 이후 record로 `verify-evidence.js`를 다시 돌려 `<run-dir>/checked.json`에 먼저 쓴다. 후보 0건(Pass 2 스킵)이면 `<findings>`를 뺀다.
 - `<targets>` = 렌즈가 읽은 파일마다 `--target <file>` (discovery와 같은 목록).
 - `codex-run.sh` 콜의 Bash `timeout`은 discovery와 같다((`PRISM_CODEX_TIMEOUT`+30)×1000 ms). 재시도·fallback도 discovery와 같은 정책.
+- Claude 에이전트(제안자·checker) 지시에 항상 붙이는 도구 규칙: "Read·Grep·Glob만 써라. Write는 마지막 펜스 블록을 바이트 그대로 `<답 파일>`에 저장할 때만 쓴다. 다른 파일은 수정하지 마라." 에이전트가 실패하거나 답 파일이 없거나 닫힌 펜스 블록이 없으면 그 답 파일에 `[fallback: claude-unavailable]`을 쓴다 — gate·check가 그 엔진을 degraded로 보고하고 run은 계속된다.
+- 빌더(`prompt propose|check`)가 exit 2면 인자 오류다 — 고치고, 아무것도 띄우지 않는다. `codex-run.sh ideas|idea-check`의 exit 2도 사용법·인자·설치 오류(또는 같은 콜이 아직 실행 중)다 — 모델 문제가 아니니 고치고 다시 돌린다.
 
 1. **제안 — 한 메시지 안에서 병렬.** 먼저 Claude 프롬프트를 만든다:
-   `node "<skill dir>/verify-ideas.js" prompt propose <targets> <findings> > <run-dir>/pass4.claude.ideas.prompt.txt`
-   그 다음 한 메시지에:
-   - Claude: Agent 1개(general-purpose) — "`<run-dir>/pass4.claude.ideas.prompt.txt`를 끝까지 읽고 그대로 수행하라. 프로젝트 파일은 수정하지 마라. 마지막 펜스 블록을 바이트 그대로 Write tool로 `<run-dir>/pass4.claude.ideas.txt`에 쓰고, 메시지도 같은 블록으로 끝내라." 끝난 뒤 파일이 없으면 에이전트의 마지막 메시지를 그대로 그 파일에 쓴다.
-   - Codex: `bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas <targets> <findings>` (답: `<run-dir>/pass4.codex.ideas.codex.txt`)
+   `node "<skill dir>/verify-ideas.js" prompt propose --root <repo-root> <targets> <findings> > <run-dir>/pass4.claude.ideas.prompt.txt`
+   exit 0이고 파일이 비어 있지 않을 때만, 한 메시지에:
+   - Claude: Agent 1개(general-purpose) — "`<run-dir>/pass4.claude.ideas.prompt.txt`를 끝까지 읽고 그대로 수행하라. 메시지는 그 파일이 요구하는 펜스 블록으로 끝내라." + 위 도구 규칙, 답 파일 `<run-dir>/pass4.claude.ideas.txt`.
+   - Codex: `bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas --root <repo-root> <targets> <findings>` (답: `<run-dir>/pass4.codex.ideas.codex.txt`)
 2. **gate** (엔진별):
    ```bash
    node "<skill dir>/verify-ideas.js" gate <run-dir>/pass4.claude.ideas.txt claude <repo-root> <findings> <targets> > <run-dir>/claude.gated.json
@@ -199,7 +202,7 @@ node "<skill dir>/verify-evidence.js" <run-dir>/records.json "<repo-root>" > <ru
    ```
 3. **교차 검사 — 모든 배치를 한 메시지 안에서 병렬.** `counts.gated`가 0인 엔진(근거 없음 또는 `degraded: true`)은 건너뛴다(rank가 gate 출력을 받는다). 배치 N = 1..⌈counts.gated/8⌉:
    - Claude 아이디어 → Codex가 검사: `bash "<skill dir>/codex-run.sh" idea-check <run-dir> check-claude-N --gated <run-dir>/claude.gated.json <findings> --batch N` (답: `<run-dir>/pass4.codex.check-claude-N.codex.txt`)
-   - Codex 아이디어 → Claude가 검사: 먼저 `node "<skill dir>/verify-ideas.js" prompt check --gated <run-dir>/codex.gated.json <findings> --batch N > <run-dir>/pass4.claude.check-codex-N.prompt.txt`(stderr `check batch N/M`), 배치당 새 Agent 1개(제안자 메시지를 보지 않게) — 같은 지시로 그 파일을 수행하고 마지막 펜스 블록을 바이트 그대로 `<run-dir>/pass4.claude.check-codex-N.txt`에 쓴다.
+   - Codex 아이디어 → Claude가 검사: 먼저 `node "<skill dir>/verify-ideas.js" prompt check --gated <run-dir>/codex.gated.json <findings> --batch N > <run-dir>/pass4.claude.check-codex-N.prompt.txt`(stderr `check batch N/M`), 배치당 새 Agent 1개(제안자 메시지를 보지 않게) — "그 프롬프트 파일을 끝까지 읽고 그대로 수행하라." + 위 도구 규칙, 답 파일 `<run-dir>/pass4.claude.check-codex-N.txt`.
 
    그 다음 엔진별:
    ```bash

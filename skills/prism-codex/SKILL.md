@@ -132,13 +132,14 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 
 렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"에 답한다 — 아이디어 렌즈당 최대 3개의 근거 있는 대안을 스크립트가 gate하고, 쓰지 않은 checker가 판정한다. Pass 2/3 뒤에, 코드·설계 대상 모두에서 돈다. 규칙·gate 검사·실패 처리는 `references/ideas.md`(단계가 degraded일 때만 읽는다). **프롬프트를 손으로 쓰지 않는다** — Codex 프롬프트는 `codex-run.sh ideas|idea-check`가 `verify-ideas.js prompt`로 만들고, 계약·판정도 손대지 않는다. 아이디어는 결함 카운트·액션 순서·degraded angle·어떤 게이트에도 들어가지 않는다.
 
+- `<repo-root>` = `git rev-parse --show-toplevel`, 아니면 대상들의 공통 디렉터리(`verify-evidence.js`가 받는 것과 같은 루트). `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수). `codex-run.sh ideas|idea-check`가 exit 2면 인자 오류다 — 고치고 다시 돌린다(모델 문제가 아니다).
 - `<findings>` = `--findings <run-dir>/checked.json`, **최종** checked.json. `--reproduce`면 Pass 3 이후 record로 `verify-evidence.js`를 다시 돌려 `<run-dir>/checked.json`에 먼저 쓴다. 후보 0건(Pass 2 스킵)이면 `<findings>`를 뺀다.
 - `<targets>` = 렌즈가 읽은 파일마다 `--target <file>` (discovery와 같은 목록).
 - Codex 콜은 Bash 1개씩 순차, Bash `timeout`은 discovery와 같다((`PRISM_CODEX_TIMEOUT`+30)×1000 ms). 재시도·fallback도 discovery와 같은 정책.
 
 ```bash
 # 1. 제안 (Codex 1콜) → 답: <run-dir>/pass4.codex.ideas.codex.txt
-bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas <targets> <findings>
+bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas --root <repo-root> <targets> <findings>
 # 2. gate
 node "<skill dir>/verify-ideas.js" gate <run-dir>/pass4.codex.ideas.codex.txt codex <repo-root> <findings> <targets> > <run-dir>/codex.gated.json
 # 3. 검사 — counts.gated가 0이면(근거 없음 또는 degraded: true) 건너뛰고 4로(rank가 gate 출력을 받는다).

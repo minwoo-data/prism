@@ -227,6 +227,8 @@ handling: `references/ideas.md` (read it only when a step degrades). **Never typ
 hand**: prompts come only from `verify-ideas.js prompt`, and no contract or verdict is edited.
 Ideas never enter defect counts, the action order, degraded lenses or any gate.
 
+- `<repo-root>` = `git rev-parse --show-toplevel`, else the targets' common directory (the same
+  root `verify-evidence.js` gets). Every `prompt propose` call passes it as `--root`.
 - `$RUN` = the run's artifacts dir, created once before Pass 2 (`records.json` and `checked.json`
   live there too):
   `mkdir -p "${TMPDIR:-${TEMP:-/tmp}}/prism" && RUN="$(mktemp -d "${TMPDIR:-${TEMP:-/tmp}}/prism/<slug>-XXXXXX")"`
@@ -237,14 +239,21 @@ Ideas never enter defect counts, the action order, degraded lenses or any gate.
   collected diff context to `$RUN/diff-context.txt` and pass that as the `--target`; it lives
   outside the repo root, and `--target` makes it quotable anyway.
 
+Claude agents (proposer and checkers) are told: "Use only Read, Grep and Glob; use Write only to
+save your final fenced block, byte for byte, to `<answer file>`. Do not modify any other file."
+If an agent fails, or its answer file is missing or holds no closed fenced block, write
+`[fallback: claude-unavailable]` to that answer file: gate and check then report the engine as
+degraded and the run goes on. A builder (`prompt propose|check`) that exits 2 is an argument
+error: fix it, launch nothing.
+
 1. **Propose** (one Agent):
    ```
-   node "<this skill dir>/verify-ideas.js" prompt propose <targets> <findings> > "$RUN/pass4.claude.ideas.prompt.txt"
+   node "<this skill dir>/verify-ideas.js" prompt propose --root "<repo-root>" <targets> <findings> > "$RUN/pass4.claude.ideas.prompt.txt"
    ```
-   Agent (general-purpose): "Read `$RUN/pass4.claude.ideas.prompt.txt` completely and do exactly
-   what it says. Do not modify any project file. Write your final fenced block, byte for byte, to
-   `$RUN/pass4.claude.ideas.txt` with the Write tool, and end your message with the same block."
-   If the file is missing afterwards, write the agent's final message verbatim to it.
+   Only after it exited 0 and the file is non-empty: one Agent (general-purpose): "Read
+   `$RUN/pass4.claude.ideas.prompt.txt` completely and do exactly what it says. End your message
+   with the fenced block it asks for." plus the tool rule above, answer file
+   `$RUN/pass4.claude.ideas.txt`.
 2. **Gate:**
    ```
    node "<this skill dir>/verify-ideas.js" gate "$RUN/pass4.claude.ideas.txt" claude "<repo-root>" <findings> <targets> > "$RUN/claude.gated.json"
@@ -255,9 +264,9 @@ Ideas never enter defect counts, the action order, degraded lenses or any gate.
    ```
    node "<this skill dir>/verify-ideas.js" prompt check --gated "$RUN/claude.gated.json" <findings> --batch N > "$RUN/pass4.claude.check-claude-N.prompt.txt"
    ```
-   One fresh Agent per batch, all in one message (fresh, so it never sees the proposer's message),
-   with the same instruction: read that prompt file, do exactly what it says, modify no project
-   file, write the final fenced block byte for byte to `$RUN/pass4.claude.check-claude-N.txt`.
+   One fresh Agent per batch, all in one message (fresh, so it never sees the proposer's message):
+   "Read `<that prompt file>` completely and do exactly what it says." plus the tool rule above,
+   answer file `$RUN/pass4.claude.check-claude-N.txt`.
    ```
    node "<this skill dir>/verify-ideas.js" check "$RUN/claude.gated.json" "$RUN/pass4.claude.check-claude-1.txt" "<repo-root>" [--also "$RUN/pass4.claude.check-claude-N.txt"]... <targets> > "$RUN/claude.checked-ideas.json"
    ```

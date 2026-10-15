@@ -60,7 +60,7 @@ which replaces the Improvement lens (S3).
 - **Pass 4 — Ideas in `/prism`, `/prism-all` and `/prism-codex`** (S3): after the Evidence pass
   (and Pass 3 with `--reproduce`, whose records are machine-checked again first), every review runs
   the idea pass on the same targets with the final `checked.json` as findings, on code and design
-  targets alike. `/prism` uses one Claude proposer and fresh Claude checkers (in `--diff` mode the
+  targets alike, with `--root <repo-root>` on every `prompt propose` and `codex-run.sh ideas` call. `/prism` uses one Claude proposer and fresh Claude checkers (in `--diff` mode the
   collected diff context is the target); `/prism-codex` uses `codex-run.sh ideas|idea-check`;
   `/prism-all` runs both proposers in parallel and has each engine check the other's ideas, then
   groups same-change ideas across engines before ranking. On by default; off with `--quick` or
