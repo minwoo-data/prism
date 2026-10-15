@@ -12,6 +12,8 @@
 #   - secret scrub over EVERYTHING Codex printed, before any of it is copied anywhere
 #   - only the --output-last-message answer is used (the raw stream echoes the prompt)
 #   - discovery output is parsed by parse-findings.js, never eyeballed
+#   - idea-pass prompts are built by verify-ideas.js from files (the same bytes the Claude agent
+#     gets), never typed by the orchestrator
 #   - one attempt per angle at a time (lock); unscrubbed scratch lives outside the run dir
 #
 # Usage:
@@ -22,6 +24,10 @@
 #   codex-run.sh evidence <run-dir> <chunk-id> [--target F]...  <<'EOF'
 #     <evidence prompt, candidates, record v2 contract>
 #   EOF
+#   codex-run.sh ideas <run-dir> <name> --target F [--target F]... [--findings F] [--context F]...
+#   codex-run.sh idea-check <run-dir> <name> --gated F [--gated F]... [--findings F] [--batch N]
+#     (no stdin: the prompt is `verify-ideas.js prompt propose|check` with the same arguments;
+#      the answer goes to pass4.codex.<name>.codex.txt for `verify-ideas.js gate|check`)
 #   codex-run.sh scrub <file>...          sanitizes secret-shaped files in place, exit 3 on a hit
 #   codex-run.sh --selftest
 #
@@ -47,6 +53,7 @@ SKILL_NAME="$(basename "$HERE")"
 MAX_BYTES=180000
 MAX_TIMEOUT=570
 PARSER=parse-findings.js
+IDEAS=verify-ideas.js
 PEM_HEADER='-----BEGIN (RSA |EC |DSA |OPENSSH |ENCRYPTED |)?PRIVATE KEY-----'
 B64_RUN='[A-Za-z0-9+/]{32,}={0,2}'
 # Example values reviewers write in suggested fixes; never real secrets.
@@ -396,10 +403,20 @@ cmd_run() {
   [ -d "$dir" ] || die "run dir not found: '$dir' (create it with: codex-run.sh init <slug>)"
   case "$angle" in ''|*[!A-Za-z0-9._-]*|.*) die "angle must match [A-Za-z0-9._-]+ and not start with '.': '$angle'" ;; esac
 
-  local targets=() checklist="" t
+  local targets=() checklist="" t build=()
   while [ $# -gt 0 ]; do
-    case "$1" in
-      --target|--checklist)
+    case "$kind:$1" in
+      ideas:--target|ideas:--context|ideas:--findings|idea-check:--gated|idea-check:--findings)
+        [ $# -ge 2 ] || die "$1 needs a file"
+        { [ -f "$2" ] && [ -r "$2" ]; } || die "${1#--} is not a readable file: '$2'"
+        credential_path "$2" && die "refusing credential file '$2' as ${1#--}: it would be copied into the prompt"
+        build+=("$1" "$2"); shift 2 ;;
+      idea-check:--batch)
+        [ $# -ge 2 ] || die "--batch needs a number"
+        case "$2" in ''|*[!0-9]*) die "--batch must be a whole number, got '$2'" ;; esac
+        build+=("$1" "$2"); shift 2 ;;
+      ideas:*|idea-check:*) die "unknown option '$1' for $kind" ;;
+      *:--target|*:--checklist)
         [ $# -ge 2 ] || die "$1 needs a file"
         { [ -f "$2" ] && [ -r "$2" ]; } || die "${1#--} is not a readable file: '$2'"
         credential_path "$2" && die "refusing credential file '$2' as ${1#--}: it would be copied into the prompt"
@@ -414,6 +431,12 @@ cmd_run() {
     esac
   done
   [ "$kind" = discovery ] && [ ${#targets[@]} -eq 0 ] && die "discovery needs at least one --target"
+  local idea_kind=""
+  case "$kind" in ideas) idea_kind=propose ;; idea-check) idea_kind=check ;; esac
+  if [ -n "$idea_kind" ]; then
+    [ -f "$HERE/$IDEAS" ] || die "$IDEAS not found next to this script"
+    command -v node >/dev/null 2>&1 || die "node is not on PATH (verify-ideas.js builds the prompt)"
+  fi
   if [ -n "$checklist" ]; then
     case "$angle" in
       security|redteam) ;;
@@ -433,9 +456,10 @@ cmd_run() {
                warn "PRISM_CODEX_SANDBOX=bypass: Codex runs without a sandbox (full file and network access)" ;;
     *) die "PRISM_CODEX_SANDBOX must be read-only or bypass, got '$sandbox'" ;;
   esac
-  [ -t 0 ] && die "the $kind prompt must come on stdin (quoted heredoc: <<'EOF')"
+  [ -z "$idea_kind" ] && [ -t 0 ] && die "the $kind prompt must come on stdin (quoted heredoc: <<'EOF')"
 
-  local pass=1; [ "$kind" = evidence ] && pass=2
+  local pass=1
+  case "$kind" in evidence) pass=2 ;; ideas|idea-check) pass=4 ;; esac
   local prompt="$dir/pass$pass.codex.$angle.prompt.txt"
   local out="$dir/pass$pass.codex.$angle.codex.txt"
 
@@ -450,8 +474,16 @@ cmd_run() {
   archive_incident "$out"
   rm -f -- "$out" "$out.json" "$prompt"
   echo "[fallback: not-started]" > "$out" || die "cannot write in $dir"
-  cat > "$lens"
-  [ -s "$lens" ] || die "empty $kind prompt on stdin"
+  if [ -n "$idea_kind" ]; then
+    # The idea-pass prompt (target, findings, context, instructions, contract) comes from the same
+    # builder the Claude agent's prompt comes from; only the preamble below is Codex-specific.
+    node "$HERE/$IDEAS" prompt "$idea_kind" "${build[@]}" > "$lens" 2> "$CR_SCRATCH/build.err" \
+      || die "verify-ideas.js prompt $idea_kind failed: $(sanitized_tail "$CR_SCRATCH/build.err")"
+    [ -s "$lens" ] || die "verify-ideas.js prompt $idea_kind printed nothing"
+  else
+    cat > "$lens"
+    [ -s "$lens" ] || die "empty $kind prompt on stdin"
+  fi
 
   META_MODEL="${PRISM_CODEX_MODEL:-default}"; META_EFFORT="$effort"; META_SANDBOX="$sandbox"; META_SECONDS=0
   local status="" took=0 bytes rc allow="" found=""
@@ -599,6 +631,9 @@ cmd_run() {
     counts="$(publish_json "$out" "$angle" "$status")" || status="$status+parse-failed"
     echo "[codex-run] $SKILL_NAME pass1 $angle: status=$status $counts $meta out=$out"
     cat "$out.json"; echo
+  elif [ -n "$idea_kind" ]; then
+    # The answer is read by verify-ideas.js gate|check, not by the orchestrator.
+    echo "[codex-run] $SKILL_NAME pass4 $kind $angle: status=$status $meta out=$out"
   else
     echo "[codex-run] $SKILL_NAME pass2 $angle: status=$status $meta out=$out"
     cat "$out"; echo
@@ -693,7 +728,7 @@ FAKE
   check "scratch dir removed after the run" '[ -z "$(ls -A "$TMPDIR" | grep codex-run-)" ]'
   check "findings parsed to json with run metadata" 'grep -q "\"degraded\":false" "$O.json" && grep -q "off by one" "$O.json" && grep -q "\"status\":\"ok\"" "$O.json" && grep -q "\"effort\":\"high\"" "$O.json"'
   check "summary line reports ok, 1 finding, model and effort" 'printf "%s" "$out" | head -1 | grep -q "status=ok findings=1 degraded=false skipped=0 model=default effort=high"'
-  check "SKILL.md carries the same findings grammar for the Claude agents" 'grep -qF "<<<PRISM-FINDINGS v1>>>" "$HERE/SKILL.md" && grep -qF "CRIT|HIGH|MED|LOW" "$HERE/SKILL.md" && contract | grep -q "CRIT, HIGH, MED, LOW"'
+  check "SKILL.md carries the same findings grammar for the Claude agents (skills that run discovery)" '! grep -qF "codex-run.sh\" discovery" "$HERE/SKILL.md" || { grep -qF "<<<PRISM-FINDINGS v1>>>" "$HERE/SKILL.md" && grep -qF "CRIT|HIGH|MED|LOW" "$HERE/SKILL.md" && contract | grep -q "CRIT, HIGH, MED, LOW"; }'
 
   out2="$(PRISM_CODEX_MODEL=gpt-x PRISM_CODEX_SANDBOX=bypass FAKE_MODE=ok run discovery "$D" bypass --target "$T/a.js" <<<'LENS' 2>/dev/null)"
   check "bypass flag only when asked; model passed as -m and reported" 'grep -qx -- "--dangerously-bypass-approvals-and-sandbox" "$T/args" && ! grep -qx -- "-s" "$T/args" && grep -A1 -x -- "-m" "$T/args" | grep -qx gpt-x && printf "%s" "$out2" | head -1 | grep -q "model=gpt-x effort=high sandbox=bypass"'
@@ -785,6 +820,26 @@ FAKE
   out="$(FAKE_MODE=evid run evidence "$D" evidence-1 <<<'EVIDENCE PROMPT' 2>/dev/null)"
   check "evidence: no findings contract appended, answer printed" '[ -s "$D/pass2.codex.evidence-1.prompt.txt" ] && ! grep -q "OUTPUT CONTRACT" "$D/pass2.codex.evidence-1.prompt.txt" && printf "%s" "$out" | grep -q "EVIDENCE-BODY-42"'
 
+  if [ -f "$HERE/$IDEAS" ] && command -v node >/dev/null 2>&1; then
+    printf '[]\n' > "$T/findings.json"; printf 'note: keyword scoring misses strong items\n' > "$T/notes.md"; printf 'K=v\n' > "$T/.env"
+    out="$(FAKE_MODE=ok run ideas "$D" ideas --target "$T/a.js" --findings "$T/findings.json" --context "$T/notes.md" 2>/dev/null </dev/null)"
+    P="$D/pass4.codex.ideas.prompt.txt"
+    node "$HERE/$IDEAS" prompt propose --target "$T/a.js" --findings "$T/findings.json" --context "$T/notes.md" > "$T/claude-prompt.txt" 2>/dev/null
+    check "ideas: Codex prompt = preamble + the exact bytes the Claude agent gets" '[ "$(head -1 "$P")" = "SANDBOX SAFETY POLICY (mandatory, applies to every shell command you execute):" ] && [ -s "$T/claude-prompt.txt" ] && tail -c "$(wc -c < "$T/claude-prompt.txt")" "$P" | cmp -s - "$T/claude-prompt.txt" && [ "$(( $(wc -c < "$P") - $(wc -c < "$T/claude-prompt.txt") ))" -eq "$( { preamble; printf "\n==== AGENT PROMPT BELOW ====\n"; } | wc -c)" ]'
+    check "ideas: no stdin read, answer in pass4 file, contract last in the prompt" 'grep -q "off by one" "$D/pass4.codex.ideas.codex.txt" && printf "%s" "$out" | grep -q "pass4 ideas ideas: status=ok" && [ "$(grep -n "<<<PRISM-IDEAS v1>>>" "$P" | tail -1 | cut -d: -f1)" -gt "$(grep -n "^## Idea pass: propose" "$P" | cut -d: -f1)" ]'
+    run ideas "$D" ideas2 --target "$T/a.js" --context "$T/.env" </dev/null >/dev/null 2>&1; rc=$?
+    check "ideas: a credential file as context is refused (exit 2)" '[ $rc -eq 2 ]'
+    run ideas "$D" ideas3 --target "$T/a.js" --checklist "$T/notes.md" </dev/null >/dev/null 2>&1; rc=$?
+    check "ideas: options of other kinds are refused (exit 2)" '[ $rc -eq 2 ]'
+    printf '%s\n' '{"kind":"prism-ideas-gate","version":1,"engine":"claude","ideas":[{"key":"claude-1-abcd","engine":"claude","status":"GATED","lens":"route","title":"t","problem":"p","grounds":["a.js:1 — function f(a){ return a; }"],"proposal":"x","replaces":"y","cost":"S","cost_note":"n","effect":"e","risk":"r"}]}' > "$T/gated.json"
+    FAKE_MODE=ok run idea-check "$D" check-1 --gated "$T/gated.json" --batch 1 </dev/null >/dev/null 2>&1
+    check "idea-check: checker prompt built from the gate output, contract last" 'grep -q "claude-1-abcd" "$D/pass4.codex.check-1.prompt.txt" && [ "$(grep -n "<<<PRISM-IDEA-CHECK v1>>>" "$D/pass4.codex.check-1.prompt.txt" | tail -1 | cut -d: -f1)" -gt "$(grep -n "claude-1-abcd" "$D/pass4.codex.check-1.prompt.txt" | head -1 | cut -d: -f1)" ]'
+    run idea-check "$D" check-2 --gated "$T/gated.json" --batch 9 </dev/null >/dev/null 2>&1; rc=$?
+    check "idea-check: a builder error (batch out of range) is a usage error (exit 2)" '[ $rc -eq 2 ]'
+  else
+    echo "skip ideas cases (no $IDEAS here or no node)"
+  fi
+
   run discovery "$D" ../escape --target "$T/a.js" <<<'LENS' >/dev/null 2>&1; rc=$?
   check "path-like angle rejected (exit 2)" '[ $rc -eq 2 ]'
   run discovery "$D" nofile --target "$T/missing.js" <<<'LENS' >/dev/null 2>&1; rc=$?
@@ -852,7 +907,9 @@ case "${1:-}" in
   init)      shift; cmd_init "$@" ;;
   discovery) shift; cmd_run discovery "$@" ;;
   evidence)  shift; cmd_run evidence "$@" ;;
+  ideas)     shift; cmd_run ideas "$@" ;;
+  idea-check) shift; cmd_run idea-check "$@" ;;
   scrub)     shift; cmd_scrub "$@" ;;
   --selftest) selftest ;;
-  *) die "usage: codex-run.sh init|discovery|evidence|scrub|--selftest (see the header of this file)" ;;
+  *) die "usage: codex-run.sh init|discovery|evidence|ideas|idea-check|scrub|--selftest (see the header of this file)" ;;
 esac

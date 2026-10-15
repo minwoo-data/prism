@@ -26,12 +26,19 @@
  *            never silently clean. Two checkers that disagree on a key: the stricter verdict stands.
  *   rank   : merges engines. cross_model only from explicit groups the caller passes (the LLM
  *            groups semantically; this script never guesses). Order depends on content only.
+ *   prompt : builds the proposer and checker prompts (the same bytes for both engines; codex-run.sh
+ *            ideas / idea-check run this builder and only add the Sandbox Safety Preamble).
+ *   render : the report's IDEAS section from rank's output.
  *
  * Usage:
- *   node verify-ideas.js gate <proposer-out> <claude|codex> <repo-root> [--findings checked.json] [--context <file>]...
- *   node verify-ideas.js check <gated.json> <checker-out> <repo-root> [--also <checker-out>]... [--context <file>]...
+ *   node verify-ideas.js gate <proposer-out> <claude|codex> <repo-root> [--findings checked.json] [--target <file>]... [--context <file>]...
+ *   node verify-ideas.js check <gated.json> <checker-out> <repo-root> [--also <checker-out>]... [--target <file>]... [--context <file>]...
  *   node verify-ideas.js rank <checked-ideas.json>... [--groups groups.json]
+ *   node verify-ideas.js prompt propose --target <file>... [--findings checked.json] [--context <file>]...
+ *   node verify-ideas.js prompt check --gated <gated.json>... [--findings checked.json] [--batch N]
+ *   node verify-ideas.js render <ideas.json>
  *   node verify-ideas.js --selftest
+ * --target files are quotable grounds like --context files (a target outside the repo root needs it).
  * Exit: 0 = result JSON on stdout (a failed engine is degraded:true, still 0); 2 = usage/input error
  *       (an unreadable input file, a findings file of the wrong shape, a gate/check output of the
  *       wrong kind, a missing ./verify-evidence.js).
@@ -1170,6 +1177,53 @@ function selftest() {
     t('CLI: a good gate exits 0 with JSON', r.status === 0 && JSON.parse(r.stdout).counts.gated === 1);
   });
 
+  guard('prompts', () => {
+    const read = (rel) => fs.readFileSync(path.join(__dirname, rel), 'utf8');
+    let r = buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [ctxFile], findings });
+    const tx = r.text || '';
+    const at = (needle) => tx.indexOf(needle);
+    t('propose prompt: target < findings < context < instructions < contract, contract last',
+      at('--- BEGIN TARGET:') !== -1 && at('--- BEGIN TARGET:') < at('==== FINDINGS') && at('==== FINDINGS') < at('--- BEGIN CONTEXT:') &&
+      at('--- BEGIN CONTEXT:') < at('## Idea pass: propose') && at('## Idea pass: propose') < at(IDEAS_BEGIN) &&
+      tx.endsWith(read('templates/ideas-contract.md').replace(/\s+$/, '') + '\n'));
+    t('propose prompt lists only machine-checked SUPPORTED / REPRODUCED findings',
+      /PRISM-001 \| SUPPORTED/.test(tx) && /PRISM-004 \| REPRODUCED/.test(tx) && !/PRISM-00[2356] \|/.test(tx));
+    r = buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [], findings: null });
+    t('standalone propose prompt has no FINDINGS section', !!r.text && r.text.indexOf('==== FINDINGS') === -1);
+    t('propose refuses a credential file as target or context', /credential/.test(buildPropose({ targets: [path.join(repo, '.env')], contexts: [], findings: null }).error || '') &&
+      /credential/.test(buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [path.join(repo, 'deploy.token')], findings: null }).error || ''));
+    t('the propose instructions name the three lenses', LENSES.every((l) => read('templates/ideas-prompt.md').indexOf('**' + l + ' (') !== -1));
+
+    const many = G([idea({ title: 'p1', grounds: ['PRISM-001'] }), idea({ title: 'p2', grounds: [QUOTE, 'src/score.js:3 — not in the file at all'] }), idea({ title: 'p3' }),
+      idea({ lens: 'class', title: 'p4' }), idea({ lens: 'class', title: 'p5' }), idea({ lens: 'class', title: 'p6' }),
+      idea({ lens: 'subtract', title: 'p7' }), idea({ lens: 'subtract', title: 'p8' }), idea({ lens: 'subtract', title: 'p9', grounds: ['nothing'] })]);
+    r = buildCheck({ gated: [many], findings, batch: 1 });
+    t('check prompt: batches of 8 GATED ideas, instructions first, contract last', r.batches === 1 && r.keys.length === 8 &&
+      r.text.indexOf('## Idea pass: check') === 0 && r.text.endsWith(read('templates/idea-check-contract.md').replace(/\s+$/, '') + '\n'));
+    t('check prompt shows only verified grounds and the cited findings', r.text.indexOf('not in the file at all') === -1 &&
+      /==== FINDINGS CITED AS GROUNDS ====\nPRISM-001 \| SUPPORTED/.test(r.text) && r.text.indexOf('PRISM-004 |') === -1);
+    const nine = G([idea({ title: 'q1' }), idea({ title: 'q2' }), idea({ title: 'q3' })]);
+    r = buildCheck({ gated: [many, nine], findings, batch: 2 });
+    t('second batch carries the rest', r.batches === 2 && r.keys.length === 3 && r.batch === 2);
+    t('check prompt errors: out-of-range batch, findings missing, nothing GATED, not a gate output',
+      /--batch/.test(buildCheck({ gated: [many], findings, batch: 3 }).error || '') &&
+      /--findings/.test(buildCheck({ gated: [many], findings: null }).error || '') &&
+      /no GATED/.test(buildCheck({ gated: [G(['junk'])], findings }).error || '') &&
+      /kind/.test(buildCheck({ gated: [{ ideas: [] }], findings }).error || ''));
+
+    const cl = check(many, [CHECK([{ key: many.ideas[0].key, verdict: 'KEEP', reason: 'solves it <img src=x> ![t](http://x) @someone' }])], env);
+    const rk = rank([cl], null);
+    r = render(rk);
+    t('render: header counts, verdict words, grounds with strength, unchecked', !!r.text && r.text.indexOf('## IDEAS (alternatives, not defects; not in the action order)') === 0 &&
+      /Ideas: 9 proposed -> 8 grounded -> 1 keep, 0 weak, 0 drop, 7 unchecked \(ungrounded 1\)/.test(r.text) &&
+      /- IDEA-1 \[claude \| route \| cost M \| KEEP: worth doing\] p1/.test(r.text) && /grounds: PRISM-001 \(SUPPORTED\)/.test(r.text) &&
+      /UNCHECKED: not checked/.test(r.text) && /\+1 that failed verification/.test(r.text));
+    t('render: model text carries no markup (HTML, images, mentions)', r.text.indexOf('<img') === -1 && r.text.indexOf('![') === -1 && r.text.indexOf('@someone') === -1);
+    t('render: degraded engines and partial checkers are named', /checker partial for claude ideas/.test(render(rank([check(many, ['[fallback: timeout]', CHECK([{ key: many.ideas[0].key, verdict: 'KEEP', reason: 'r' }])], env)], null)).text) &&
+      /proposer codex/.test(render(rank([gate('nothing', 'codex', env)], null)).text));
+    t('render refuses anything but rank output', !!render(cl).error);
+  });
+
   guard('junk', () => {
     let threw = false;
     try {
@@ -1185,12 +1239,149 @@ function selftest() {
   process.exit(fails ? 1 : 0);
 }
 
+// ---------------------------------------------------------------- prompts + report section
+//
+// One builder for both engines: `prompt` prints the exact bytes the Claude agent gets, and
+// codex-run.sh (ideas / idea-check) runs this same builder and only puts its Sandbox Safety Preamble
+// in front. Instructions and contracts are template files, appended verbatim, the contract last.
+
+const PROMPT_FILES = {
+  propose: ['templates/ideas-prompt.md', 'templates/ideas-contract.md'],
+  check: ['templates/idea-check-prompt.md', 'templates/idea-check-contract.md'],
+};
+const CHECK_BATCH = 8;
+
+function oneLine(v, max) {
+  const s = clean(v == null ? '' : v);
+  return max && s.length > max ? s.slice(0, max - 3) + '...' : s;
+}
+function readPart(rel) { return fs.readFileSync(path.join(__dirname, rel), 'utf8').replace(/\s+$/, '') + '\n'; }
+function fileBlock(kind, name) {
+  const body = fs.readFileSync(name, 'utf8');
+  return `--- BEGIN ${kind}: ${name} ---\n${body}${body.endsWith('\n') ? '' : '\n'}--- END ${kind}: ${name} ---\n`;
+}
+// A file the operator hands in is copied into a prompt verbatim: never a credential file.
+function refuseFile(f) {
+  if (badPathShape(String(f))) return `refusing ${f}: network or stream path`;
+  if (isCredential(f) || isCredential(realOr(path.resolve(f)) || '')) return `refusing credential file ${f}: it would be copied into the prompt`;
+  return null;
+}
+
+// Confirmed findings, one line each. Only machine-checked SUPPORTED / REPRODUCED: nothing else grounds.
+function findingLines(findings, only) {
+  const f = loadFindings(findings);
+  if (f.error) return [];
+  const lines = [];
+  for (const [id, r] of f.map) {
+    if (only && !only.has(id)) continue;
+    const ec = r._evidence_check;
+    if (!GROUNDED.has(r.status) || !ec || ec.checked !== true || ec.quote_found !== true) continue;
+    lines.push([id, r.status, r.severity || '?', r.file ? `${r.file}:${r.lines || '?'}` : '?', oneLine(r.claim, 300)].join(' | '));
+  }
+  return lines;
+}
+
+// -> { text } | { error }
+function buildPropose(o) {
+  if (!o.targets.length) return { error: 'propose needs at least one --target' };
+  for (const f of o.targets.concat(o.contexts)) { const why = refuseFile(f); if (why) return { error: why }; }
+  if (o.findings !== null && loadFindings(o.findings).error) return { error: loadFindings(o.findings).error };
+  const parts = [];
+  try {
+    for (const t of o.targets) parts.push(fileBlock('TARGET', t));
+    if (o.findings !== null) {
+      const lines = findingLines(o.findings);
+      parts.push(`==== FINDINGS (confirmed by the Evidence pass; cite an ID as a ground) ====\n${lines.length ? lines.join('\n') : '(none confirmed in this run)'}\n`);
+    }
+    for (const c of o.contexts) parts.push(fileBlock('CONTEXT', c));
+    for (const rel of PROMPT_FILES.propose) parts.push(readPart(rel));
+  } catch (e) { return { error: `cannot read ${e && e.path ? e.path : 'a prompt part'}` }; }
+  return { text: parts.join('\n') };
+}
+
+// GATED ideas of every given gate output, in input order, cut into batches of CHECK_BATCH.
+function checkBatches(gatedList) {
+  const ideas = [];
+  for (const g of gatedList) for (const i of (g && Array.isArray(g.ideas) ? g.ideas : [])) {
+    if (i && i.status === 'GATED' && typeof i.key === 'string') ideas.push(i);
+  }
+  const batches = [];
+  for (let i = 0; i < ideas.length; i += CHECK_BATCH) batches.push(ideas.slice(i, i + CHECK_BATCH));
+  return batches;
+}
+
+// -> { text, batch, batches, keys } | { error }
+function buildCheck(o) {
+  if (o.gated.some((g) => !g || g.kind !== 'prism-ideas-gate')) return { error: 'prompt check takes the JSON that gate prints (kind prism-ideas-gate)' };
+  const batches = checkBatches(o.gated);
+  if (!batches.length) return { error: 'no GATED idea to check (skip the check step)' };
+  const n = o.batch === undefined ? 1 : o.batch;
+  if (!Number.isInteger(n) || n < 1 || n > batches.length) return { error: `--batch must be 1-${batches.length}` };
+  const batch = batches[n - 1];
+  const cited = new Set();
+  const lines = batch.map((i) => {
+    for (const g of i.ground_checks || []) if (g && g.ok && g.kind === 'finding') cited.add(String(g.finding).toUpperCase());
+    return JSON.stringify({ key: i.key, lens: i.lens, title: i.title, problem: i.problem, grounds: i.grounds || [],
+      proposal: i.proposal, replaces: i.replaces, cost: i.cost, cost_note: i.cost_note, effect: i.effect, risk: i.risk });
+  });
+  if (cited.size && o.findings === null) return { error: `the ideas cite ${[...cited].join(', ')}; pass the same --findings file the gate used` };
+  const parts = [];
+  try {
+    parts.push(readPart(PROMPT_FILES.check[0]));
+    parts.push(`==== IDEAS TO CHECK (batch ${n} of ${batches.length}; answer every key) ====\n${lines.join('\n')}\n`);
+    if (cited.size) parts.push(`==== FINDINGS CITED AS GROUNDS ====\n${findingLines(o.findings, cited).join('\n')}\n`);
+    parts.push(readPart(PROMPT_FILES.check[1]));
+  } catch (e) { return { error: `cannot read ${e && e.path ? e.path : 'a prompt part'}` }; }
+  return { text: parts.join('\n'), batch: n, batches: batches.length, keys: batch.map((i) => i.key) };
+}
+
+const VERDICT_WORD = { KEEP: 'worth doing', WEAK: 'worth a look', UNCHECKED: 'not checked' };
+// Report text never carries markup from model output: no HTML, no images, no mentions.
+const inert = (s) => oneLine(s).replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/!\[/g, '!\\[').replace(/@(?=\w)/g, '@\u200B');
+
+// The report's IDEAS section, from rank output. Certainty language follows the verdict.
+function render(r) {
+  if (!r || r.kind !== 'prism-ideas-rank' || !Array.isArray(r.ideas)) return { error: 'render takes the JSON that rank prints' };
+  const m = r.meta || {};
+  const out = ['## IDEAS (alternatives, not defects; not in the action order)'];
+  const extra = [['merged', m.merged_away], ['ungrounded', m.ungrounded], ['over cap', m.over_cap], ['invalid', m.invalid]]
+    .filter((p) => p[1]).map((p) => `${p[0]} ${p[1]}`);
+  out.push(`Ideas: ${m.proposed || 0} proposed -> ${m.grounded || 0} grounded -> ${m.keep || 0} keep, ${m.weak || 0} weak, ${m.drop || 0} drop, ${m.unchecked || 0} unchecked` +
+    (extra.length ? ` (${extra.join('; ')})` : ''));
+  const deg = [];
+  if ((m.degraded_engines || []).length) deg.push(`proposer ${m.degraded_engines.join(', ')}`);
+  if ((m.check_degraded || []).length) deg.push(`checker answered nothing for ${m.check_degraded.join(', ')} ideas`);
+  if ((m.check_partial || []).length) deg.push(`checker partial for ${m.check_partial.join(', ')} ideas`);
+  if (deg.length) out.push(`Degraded (infra, not ideas): ${deg.join('; ')}`);
+  for (const i of r.ideas) {
+    const who = i.cross_model ? 'cross-model' : (i.engines || [i.engine]).join('+');
+    out.push(`- ${i.id} [${who} | ${i.lens} | cost ${i.cost} | ${i.verdict}: ${VERDICT_WORD[i.verdict] || ''}] ${inert(i.title)}`);
+    out.push(`  problem: ${inert(i.problem)} · replaces: ${i.additive ? 'none (additive)' : inert(i.replaces)}`);
+    out.push(`  proposal: ${inert(i.proposal)}`);
+    out.push(`  effect: ${inert(i.effect)} · risk: ${inert(i.risk)}`);
+    const gd = (i.grounds_detail || (i.grounds || []).map((g) => ({ ground: g })))
+      .map((g) => inert(oneLine(g.ground, 200)) + (g.kind === 'finding' ? ` (${g.strength})` : '') + (g.context ? ' (context file)' : ''));
+    out.push(`  grounds: ${gd.join(' ; ')}${i.grounds_failed ? ` (+${i.grounds_failed} that failed verification)` : ''}`);
+    if (i.check && i.check.reason) {
+      out.push(`  check: ${inert(i.check.reason)}${i.check.cost_note ? ` (cost set to ${i.cost}: ${inert(i.check.cost_note)})` : ''}${i.check.note ? ` [${inert(i.check.note)}]` : ''}`);
+    } else if (i.check && i.check.note) out.push(`  check: [${inert(i.check.note)}]`);
+  }
+  if (!r.ideas.length) out.push('- none: no idea survived the gate and the check');
+  if ((r.dropped || []).length) {
+    out.push(`Dropped by the checker: ${r.dropped.map((d) => `${inert(oneLine(d.title, 80))} (${(d.check && d.check.basis) || 'drop'})`).join('; ')}`);
+  }
+  return { text: out.join('\n') + '\n' };
+}
+
 // ---------------------------------------------------------------- CLI
 
 function usage(msg) {
-  process.stderr.write(`[verify-ideas] ${msg}\nusage: verify-ideas.js gate <proposer-out> <claude|codex> <repo-root> [--findings f] [--context f]...\n` +
-    `       verify-ideas.js check <gated.json> <checker-out> <repo-root> [--also f]... [--context f]...\n` +
-    `       verify-ideas.js rank <checked-ideas.json>... [--groups g.json]\n       verify-ideas.js --selftest\n`);
+  process.stderr.write(`[verify-ideas] ${msg}\nusage: verify-ideas.js gate <proposer-out> <claude|codex> <repo-root> [--findings f] [--target f]... [--context f]...\n` +
+    `       verify-ideas.js check <gated.json> <checker-out> <repo-root> [--also f]... [--target f]... [--context f]...\n` +
+    `       verify-ideas.js rank <checked-ideas.json>... [--groups g.json]\n` +
+    `       verify-ideas.js prompt propose --target f [--target f]... [--findings f] [--context f]...\n` +
+    `       verify-ideas.js prompt check --gated f [--gated f]... [--findings f] [--batch N]\n` +
+    `       verify-ideas.js render <ideas.json>\n       verify-ideas.js --selftest\n`);
   process.exit(2);
 }
 
@@ -1226,28 +1417,30 @@ function main(argv) {
   const cmd = argv[0];
   if (cmd === '--selftest') return selftest();
   if (cmd === 'gate') {
-    const { pos, opts } = splitArgs(argv.slice(1), ['--context'], ['--findings']);
+    const { pos, opts } = splitArgs(argv.slice(1), ['--context', '--target'], ['--findings']);
     if (pos.length !== 3) usage('gate takes <proposer-out> <engine> <repo-root>');
     const [out, engine, root] = pos;
     if (ENGINES.indexOf(engine) === -1) usage(`engine must be one of ${ENGINES.join('|')}`);
     if (!fs.existsSync(root)) usage(`repo root not found: ${root}`);
-    for (const c of opts['--context']) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`context file not found: ${c}`); }
+    const quotable = opts['--target'].concat(opts['--context']);
+    for (const c of quotable) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`file not found: ${c}`); }
     const findings = opts['--findings'] !== undefined ? readJson(opts['--findings'], 'findings file') : null;
-    const env = makeEnv(root, findings, opts['--context']);
+    const env = makeEnv(root, findings, quotable);
     if (env.findingsError) usage(env.findingsError);
     const res = gate(readText(out, 'proposer output'), engine, env);
     process.stdout.write(JSON.stringify(res, null, 2) + '\n');
     return;
   }
   if (cmd === 'check') {
-    const { pos, opts } = splitArgs(argv.slice(1), ['--context', '--also'], []);
+    const { pos, opts } = splitArgs(argv.slice(1), ['--context', '--target', '--also'], []);
     if (pos.length !== 3) usage('check takes <gated.json> <checker-out> <repo-root>');
     const [gatedFile, out, root] = pos;
     if (!fs.existsSync(root)) usage(`repo root not found: ${root}`);
-    for (const c of opts['--context']) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`context file not found: ${c}`); }
+    const quotable = opts['--target'].concat(opts['--context']);
+    for (const c of quotable) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`file not found: ${c}`); }
     const gated = readJson(gatedFile, 'gated file');
     const texts = [out].concat(opts['--also']).map((f) => readText(f, 'checker output'));
-    const res = check(gated, texts, makeEnv(root, null, opts['--context']));
+    const res = check(gated, texts, makeEnv(root, null, quotable));
     if (res.error) usage(res.error);
     process.stdout.write(JSON.stringify(res, null, 2) + '\n');
     return;
@@ -1262,10 +1455,42 @@ function main(argv) {
     process.stdout.write(JSON.stringify(res, null, 2) + '\n');
     return;
   }
+  if (cmd === 'prompt' && argv[1] === 'propose') {
+    const { pos, opts } = splitArgs(argv.slice(2), ['--target', '--context'], ['--findings']);
+    if (pos.length) usage(`prompt propose takes no positional arguments, got ${pos[0]}`);
+    for (const f of opts['--target'].concat(opts['--context'])) if (!fs.existsSync(f)) usage(`file not found: ${f}`);
+    const findings = opts['--findings'] !== undefined ? readJson(opts['--findings'], 'findings file') : null;
+    const res = buildPropose({ targets: opts['--target'], contexts: opts['--context'], findings });
+    if (res.error) usage(res.error);
+    process.stdout.write(res.text);
+    return;
+  }
+  if (cmd === 'prompt' && argv[1] === 'check') {
+    const { pos, opts } = splitArgs(argv.slice(2), ['--gated'], ['--findings', '--batch']);
+    if (pos.length) usage(`prompt check takes no positional arguments, got ${pos[0]}`);
+    if (!opts['--gated'].length) usage('prompt check needs at least one --gated file');
+    const batch = opts['--batch'] === undefined ? undefined : (/^\d+$/.test(opts['--batch']) ? Number(opts['--batch']) : NaN);
+    const res = buildCheck({
+      gated: opts['--gated'].map((f) => readJson(f, 'gated file')),
+      findings: opts['--findings'] !== undefined ? readJson(opts['--findings'], 'findings file') : null,
+      batch,
+    });
+    if (res.error) usage(res.error);
+    process.stderr.write(`[verify-ideas] check batch ${res.batch}/${res.batches}: ${res.keys.join(',')}\n`);
+    process.stdout.write(res.text);
+    return;
+  }
+  if (cmd === 'render') {
+    if (argv.length !== 2) usage('render takes one ideas.json (the output of rank)');
+    const res = render(readJson(argv[1], 'ideas file'));
+    if (res.error) usage(res.error);
+    process.stdout.write(res.text);
+    return;
+  }
   usage(cmd ? `unknown command ${cmd}` : 'missing command');
 }
 
-module.exports = { gate, check, rank, makeEnv, verifyQuote, looksSecret };
+module.exports = { gate, check, rank, makeEnv, verifyQuote, looksSecret, buildPropose, buildCheck, render };
 
 if (require.main === module) {
   try { main(process.argv.slice(2)); } catch (e) {
