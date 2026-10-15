@@ -721,9 +721,11 @@ function rank(inputs, groupsRaw) {
     const rep = members.slice().sort(memberCmp).find((m) => verdictOf(m) === verdict) || members[0];
     const engines = [];
     for (const m of members) if (engines.indexOf(m.engine) === -1) engines.push(m.engine);
-    const grounds = [], groundsDetail = [];
+    const grounds = [], groundsDetail = [], seenRefs = new Set();
     for (const m of members) for (const g of m.ground_checks || []) {
-      if (g.ok && grounds.indexOf(g.ground) === -1) {
+      const at = g.kind === 'quote' && g.ref ? `${g.context ? 'context:' : ''}${g.ref}` : g.ground;   // one ground per cited location
+      if (g.ok && !seenRefs.has(at)) {
+        seenRefs.add(at);
         grounds.push(g.ground);
         groundsDetail.push(Object.assign({ ground: g.ground, kind: g.kind, strength: g.strength }, g.context ? { context: g.context } : {}));
       }
@@ -1175,6 +1177,8 @@ function selftest() {
     t('CLI: an unreadable proposer output exits 2', r.status === 2);
     r = run(['gate', out, 'claude', repo]);
     t('CLI: a good gate exits 0 with JSON', r.status === 0 && JSON.parse(r.stdout).counts.gated === 1);
+    r = run(['gate', out, 'claude', repo, '--target', path.join(repo, 'src', 'score.js')]);
+    t('CLI: a --target inside the root stays a repo file, not a context file', r.status === 0 && !JSON.parse(r.stdout).ideas[0].ground_checks[0].context);
   });
 
   guard('prompts', () => {
@@ -1222,6 +1226,13 @@ function selftest() {
     t('render: degraded engines and partial checkers are named', /checker partial for claude ideas/.test(render(rank([check(many, ['[fallback: timeout]', CHECK([{ key: many.ideas[0].key, verdict: 'KEEP', reason: 'r' }])], env)], null)).text) &&
       /proposer codex/.test(render(rank([gate('nothing', 'codex', env)], null)).text));
     t('render refuses anything but rank output', !!render(cl).error);
+    const longOne = G([idea({ title: 'long', proposal: 'p'.repeat(1400) })]);
+    const lr = render(rank([check(longOne, [CHECK([{ key: longOne.ideas[0].key, verdict: 'KEEP', reason: 'r' }])], env)], null)).text;
+    t('render caps long fields (ideas.json keeps them whole)', lr.indexOf('p'.repeat(497) + '...') !== -1 && lr.indexOf('p'.repeat(498)) === -1);
+    const twinA = G([idea({ title: 'twin', grounds: [QUOTE] })]);
+    const twinB = G([idea({ title: 'twin b', grounds: ['src/score.js:3 — hits.length * 10'] })], env, 'codex');
+    const merged = rank([check(twinA, [CHECK([{ key: twinA.ideas[0].key, verdict: 'KEEP', reason: 'r' }])], env), check(twinB, [CHECK([{ key: twinB.ideas[0].key, verdict: 'KEEP', reason: 'r' }])], env)], [[twinA.ideas[0].key, twinB.ideas[0].key]]);
+    t('a merged entry lists one ground per cited location', merged.ideas[0].grounds.length === 1);
   });
 
   guard('junk', () => {
@@ -1353,17 +1364,19 @@ function render(r) {
   if ((m.check_degraded || []).length) deg.push(`checker answered nothing for ${m.check_degraded.join(', ')} ideas`);
   if ((m.check_partial || []).length) deg.push(`checker partial for ${m.check_partial.join(', ')} ideas`);
   if (deg.length) out.push(`Degraded (infra, not ideas): ${deg.join('; ')}`);
+  // Each field is capped here; ideas.json keeps the full text.
+  const cap = (v, n) => inert(oneLine(v, n));
   for (const i of r.ideas) {
     const who = i.cross_model ? 'cross-model' : (i.engines || [i.engine]).join('+');
     out.push(`- ${i.id} [${who} | ${i.lens} | cost ${i.cost} | ${i.verdict}: ${VERDICT_WORD[i.verdict] || ''}] ${inert(i.title)}`);
-    out.push(`  problem: ${inert(i.problem)} · replaces: ${i.additive ? 'none (additive)' : inert(i.replaces)}`);
-    out.push(`  proposal: ${inert(i.proposal)}`);
-    out.push(`  effect: ${inert(i.effect)} · risk: ${inert(i.risk)}`);
+    out.push(`  problem: ${cap(i.problem, 300)} · replaces: ${i.additive ? 'none (additive)' : cap(i.replaces, 200)}`);
+    out.push(`  proposal: ${cap(i.proposal, 500)}`);
+    out.push(`  effect: ${cap(i.effect, 300)} · risk: ${cap(i.risk, 300)}`);
     const gd = (i.grounds_detail || (i.grounds || []).map((g) => ({ ground: g })))
       .map((g) => inert(oneLine(g.ground, 200)) + (g.kind === 'finding' ? ` (${g.strength})` : '') + (g.context ? ' (context file)' : ''));
     out.push(`  grounds: ${gd.join(' ; ')}${i.grounds_failed ? ` (+${i.grounds_failed} that failed verification)` : ''}`);
     if (i.check && i.check.reason) {
-      out.push(`  check: ${inert(i.check.reason)}${i.check.cost_note ? ` (cost set to ${i.cost}: ${inert(i.check.cost_note)})` : ''}${i.check.note ? ` [${inert(i.check.note)}]` : ''}`);
+      out.push(`  check: ${cap(i.check.reason, 300)}${i.check.cost_note ? ` (cost set to ${i.cost}: ${inert(i.check.cost_note)})` : ''}${i.check.note ? ` [${inert(i.check.note)}]` : ''}`);
     } else if (i.check && i.check.note) out.push(`  check: [${inert(i.check.note)}]`);
   }
   if (!r.ideas.length) out.push('- none: no idea survived the gate and the check');
@@ -1401,6 +1414,14 @@ function splitArgs(args, multi, single) {
   return { pos, opts };
 }
 
+// --target files are quotable like --context files only when they live outside the repo root;
+// inside it they already are repo files (and the report should say so).
+function quotableFiles(root, targets, contexts) {
+  const rr = realOr(path.resolve(root));
+  const outside = targets.filter((t) => { const r = realOr(path.resolve(t)); return !(rr && r && inside(rr, r)); });
+  return outside.concat(contexts);
+}
+
 function readJson(file, what) {
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch (_) { usage(`cannot read ${what}: ${file}`); }
@@ -1422,10 +1443,9 @@ function main(argv) {
     const [out, engine, root] = pos;
     if (ENGINES.indexOf(engine) === -1) usage(`engine must be one of ${ENGINES.join('|')}`);
     if (!fs.existsSync(root)) usage(`repo root not found: ${root}`);
-    const quotable = opts['--target'].concat(opts['--context']);
-    for (const c of quotable) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`file not found: ${c}`); }
+    for (const c of opts['--target'].concat(opts['--context'])) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`file not found: ${c}`); }
     const findings = opts['--findings'] !== undefined ? readJson(opts['--findings'], 'findings file') : null;
-    const env = makeEnv(root, findings, quotable);
+    const env = makeEnv(root, findings, quotableFiles(root, opts['--target'], opts['--context']));
     if (env.findingsError) usage(env.findingsError);
     const res = gate(readText(out, 'proposer output'), engine, env);
     process.stdout.write(JSON.stringify(res, null, 2) + '\n');
@@ -1436,11 +1456,10 @@ function main(argv) {
     if (pos.length !== 3) usage('check takes <gated.json> <checker-out> <repo-root>');
     const [gatedFile, out, root] = pos;
     if (!fs.existsSync(root)) usage(`repo root not found: ${root}`);
-    const quotable = opts['--target'].concat(opts['--context']);
-    for (const c of quotable) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`file not found: ${c}`); }
+    for (const c of opts['--target'].concat(opts['--context'])) { if (badPathShape(c)) usage(`refusing network or stream path: ${c}`); if (!fs.existsSync(c)) usage(`file not found: ${c}`); }
     const gated = readJson(gatedFile, 'gated file');
     const texts = [out].concat(opts['--also']).map((f) => readText(f, 'checker output'));
-    const res = check(gated, texts, makeEnv(root, null, quotable));
+    const res = check(gated, texts, makeEnv(root, null, quotableFiles(root, opts['--target'], opts['--context'])));
     if (res.error) usage(res.error);
     process.stdout.write(JSON.stringify(res, null, 2) + '\n');
     return;
