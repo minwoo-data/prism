@@ -7,8 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-prism-ideas, slice S1: the idea pass's contracts and its deterministic gate. No skill calls it yet,
-so prism's behavior does not change.
+prism-ideas, slices S1 and S2: the idea pass's contracts and deterministic gate (S1), then the
+standalone `/prism-ideas` skill (S2). prism, prism-all and prism-codex do not run the idea pass
+yet, so their behavior does not change.
 
 ### Added
 - **`verify-ideas.js`** (canonical in prism-all, synced to prism and prism-codex):
@@ -40,6 +41,20 @@ so prism's behavior does not change.
   The selftest fails if a contract stops naming a field, value or limit the script enforces.
 - **`references/ideas.md`**: the three idea lenses (class / route / subtract), the checker prompt,
   the prompt assembly order and the ranking rules.
+- **`/prism-ideas`** (new skill `skills/prism-ideas`, S2): grounded alternatives without a review.
+  Claude and Codex each propose (at most 3 ideas per lens), a script gates them, the other engine
+  checks every idea, a script ranks and renders. `--context` for data files, `--findings` to reuse
+  a prism run's `checked.json`, `--engine both|claude|codex` (Claude-only when Codex is missing).
+- `verify-ideas.js prompt propose|check`: builds the proposer and checker prompts from
+  `templates/ideas-prompt.md` and `templates/idea-check-prompt.md` (new) plus the contracts, the
+  same bytes for both engines. `verify-ideas.js render`: the report's IDEAS section from `rank`,
+  with model text made inert (no HTML, images or mentions). `gate` and `check` take `--target`
+  files as quotable grounds, like `--context`. `prompt propose` (and `codex-run.sh ideas`) require
+  `--root <repo-root>`: the prompt opens with that root and heads each file by its root-relative
+  path (absolute outside the root), so a quote copied from a header resolves in the gate.
+- `codex-run.sh ideas|idea-check`: the Codex side of the idea pass. It runs the same prompt
+  builder (no stdin) and adds only the Sandbox Safety Preamble; the selftest checks that the Codex
+  prompt is the Claude prompt plus the preamble, byte for byte.
 
 ### Changed
 - `verify-evidence.js` exports its quote matcher (`quoteWindow` / `quoteInWindow`) for
@@ -47,6 +62,9 @@ so prism's behavior does not change.
   directly.
 - `verify-independence.js` requires the new files and runs `verify-ideas.js --selftest` under
   `--strict`.
+- `verify-independence.js` treats a non-fatal Codex prerequisite as a warning in the flag check too
+  (prism-ideas runs Claude-only without Codex).
+- `sync-review-parsers.sh` also generates `skills/prism-ideas` (36 copies).
 
 ### Fixed
 - `sync-review-parsers.sh` reported "synced" even when a copy failed to land (a failed `mv` inside

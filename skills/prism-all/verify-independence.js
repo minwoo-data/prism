@@ -15,7 +15,7 @@ const { execSync } = require('child_process');
 
 const SELF_NAME = 'prism-all';
 // Required at rest: the contract + the deterministic scripts it invokes.
-const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/ideas.md', 'templates/ideas-contract.md', 'templates/idea-check-contract.md', 'references/codex-invocation.md', 'codex-run.sh'];
+const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/ideas.md', 'templates/ideas-contract.md', 'templates/idea-check-contract.md', 'templates/ideas-prompt.md', 'templates/idea-check-prompt.md', 'references/codex-invocation.md', 'codex-run.sh'];
 // Scripts that must pass their own --selftest under --strict (integrity, not just presence).
 const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'codex-run.sh'];
 const PREREQUISITES = [
@@ -123,16 +123,19 @@ function checkScripts() {
 // --strict, Codex-backed skills: the installed CLI must accept every flag codex-run.sh passes
 // (the selftest only exercises a fake codex).
 function checkCodexFlags() {
-  if (!PREREQUISITES.some((p) => p.label === 'Codex CLI')) return;
+  const codex = PREREQUISITES.find((p) => p.label === 'Codex CLI');
+  if (!codex) return;
+  // Optional Codex (a skill that can run Claude-only): problems are warnings, not failures.
+  const bad = (m) => (codex.fatal ? fail(m) : warn(m));
   let help = '';
   try {
     help = execSync('codex exec --help', { stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 }).toString();
   } catch (e) {
-    fail('`codex exec --help` failed: cannot confirm the flags codex-run.sh needs');
+    return bad('`codex exec --help` failed: cannot confirm the flags codex-run.sh needs');
   }
   const need = ['--config', '--sandbox', '--model', '--output-last-message', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox'];
   const missing = need.filter((f) => !help.includes(f));
-  if (missing.length) fail(`installed Codex CLI lacks ${missing.join(', ')} (codex-run.sh passes them)`);
+  if (missing.length) return bad(`installed Codex CLI lacks ${missing.join(', ')} (codex-run.sh passes them)`);
   ok(`Codex CLI accepts ${need.length} flags codex-run.sh passes`);
 }
 function checkPrereqs() {
