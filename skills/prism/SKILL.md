@@ -1,7 +1,7 @@
 ---
 name: prism
 description: Evidence-graded multi-angle code review — 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path before anything is confirmed. Statuses SUSPECTED → SUPPORTED → REPRODUCED. Agreement is a prioritization signal, not a verdict. --redteam adds an attacker-mindset lens (absorbed prism-devil). Design docs get the design lens set (pair with /triad for writing quality). Use when user says "prism", "prism 돌려", "prism <file>", "full review", "red team", "what could break".
-argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--include-improvements] [--lenses=design] [--format json]"
+argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--no-ideas] [--include-improvements] [--lenses=design] [--format json]"
 context: fork
 user-invocable: true
 ---
@@ -13,9 +13,11 @@ user-invocable: true
 > and, when possible, **reproduced it with a failing test**. Agreement decides what gets
 > investigated first; evidence decides what survives.
 
-Files in this skill dir: `parse-findings.js`, `verify-evidence.js` (deterministic, load-bearing),
+Files in this skill dir: `parse-findings.js`, `verify-evidence.js`, `verify-ideas.js` (deterministic,
+load-bearing), `templates/` (the idea pass's prompts and output contracts),
 `references/record-v2.md` (finding schema + confidence table), `references/redteam-lens.md`,
-`references/design-lenses.md` (lens set for design docs). Read a reference only when the step below says so.
+`references/design-lenses.md` (lens set for design docs), `references/ideas.md` (idea pass rules and
+failure handling). Read a reference only when the step below says so.
 
 ## The evidence ladder
 
@@ -35,13 +37,14 @@ Files in this skill dir: `parse-findings.js`, `verify-evidence.js` (deterministi
 
 | Invocation | Behavior |
 |---|---|
-| `/prism <target>` | **Default: Discovery → Evidence pass.** All candidates get evidence-checked. |
-| `--quick` | Discovery only. Everything reported as `SUSPECTED`. |
+| `/prism <target>` | **Default: Discovery → Evidence pass → Ideas.** All candidates get evidence-checked; then the idea pass (Pass 4) proposes grounded alternatives. |
+| `--quick` | Discovery only. Everything reported as `SUSPECTED`. No idea pass. |
 | `--adversarial` | Evidence pass must argue *against* its own REJECTs before finalizing. |
 | `--reproduce` | + Reproduction pass: minimal failing tests in a temp dir (never the project). |
 | `--redteam` | + 6th discovery agent: hostile attacker-mindset probe (`references/redteam-lens.md`). Adds ATTACK CHAINS and CHECKLIST COVERAGE to the report. |
 | `--diff [base...head]` | Review **the change**, not the file. |
-| `--include-improvements` | Adds the Improvement lens (labeled separately, excluded from defect counts). |
+| `--no-ideas` | Skip the idea pass (Pass 4). |
+| `--include-improvements` | Alias kept for old commands; ideas are on by default. |
 | `--format json` | Also emit `prism-report.json` (finding records v2). |
 | `--lenses=design` | Design lens set for docs/plans/specs (automatic when the target is mostly markdown). `classic` is accepted as an alias. See `references/design-lenses.md`. |
 
@@ -52,7 +55,7 @@ Files in this skill dir: `parse-findings.js`, `verify-evidence.js` (deterministi
 - **Lens set by target type.** Code (majority of target bytes are source files, or in `--diff`
   mode any hunk touches a code file) → DEFECT set. Markdown/design/plan text → **DESIGN set**
   (`references/design-lenses.md`): conflict & reuse, claim accuracy against the repo, devil's
-  advocate, robustness of the designed system, improvement. The header prints `Lenses: defect
+  advocate, robustness of the designed system. The header prints `Lenses: defect
   (auto)` / `design (auto)` / `... (explicit)` so a silent flip between runs is visible. prism
   answers "is the design sound?"; for "is the document well written?" pair it with `/triad`
   (`/ddaro:review` runs both).
@@ -83,8 +86,8 @@ it is the only mode where the Integration lens sees real callers instead of gues
 4. **Integration & Regression** — caller/callee impact, schema/config drift, backward compatibility, hidden coupling, "works alone, breaks together".
 5. **Testability & Observability** — can this failure be caught? missing test seams, swallowed errors, logs that lie, silent fallbacks, unmonitorable failure modes.
 
-Optional: **Red Team** (`--redteam`, prompt in `references/redteam-lens.md`); **Improvement**
-(`--include-improvements`, `category: improvement`, excluded from defect counts and action order).
+Optional: **Red Team** (`--redteam`, prompt in `references/redteam-lens.md`). Alternatives are not a
+lens: they come from the idea pass (Pass 4).
 
 ---
 
@@ -119,7 +122,6 @@ Lens prompts:
 - **Integration & Regression**: "Who calls this, what does it call, what breaks together? Find caller-contract breaks, schema/config drift, backward-compat hazards, hidden coupling. Name the affected caller/consumer for each. If caller context was not provided, say so instead of guessing."
 - **Testability & Observability**: "When this fails in production, will anyone know? Find swallowed exceptions, silent fallbacks, misleading logs, untestable seams, failure modes with no signal. For each: how the failure would (not) surface."
 - **Red Team** (`--redteam`): full prompt in `references/redteam-lens.md`.
-- **Improvement** (`--include-improvements`): "Suggest concrete enhancements. For each: current state → proposed improvement → rationale."
 - **Design set** (documents; automatic, or `--lenses=design`): `references/design-lenses.md`.
 
 ---
@@ -178,8 +180,9 @@ Evidence Agent prompt:
 
 **Machine check (invariant):** parse the v2 records to JSON, then
 ```
-node "<this skill dir>/verify-evidence.js" records.json "<repo-root>" > checked.json
+node "<this skill dir>/verify-evidence.js" "$RUN/records.json" "<repo-root>" > "$RUN/checked.json"
 ```
+(`$RUN` = the run's artifacts dir, see Pass 4; Pass 4 reads `checked.json` from there.)
 It greps every `SUPPORTED`/`REPRODUCED` quote against the cited file+lines (mismatch →
 `SUSPECTED (EVIDENCE_QUOTE_MISMATCH)`) and computes `fingerprint`. **`checked.json` is the source
 of truth.** Self-check: `node verify-evidence.js --selftest`.
@@ -215,13 +218,65 @@ Every record carries `reproduction.status`; `STATIC_EVIDENCE_ONLY` / `NOT_RUN` a
 
 ---
 
+## Pass 4 — Ideas (default; off with `--quick` or `--no-ideas`)
+
+The lenses answer "is this wrong?"; the idea pass answers "what should we do instead?": at most 3
+grounded alternatives per idea lens, gated by a script and judged by a checker that did not write
+them. It runs after Pass 2/3 on every target, code or design. Rules, the gate's checks and failure
+handling: `references/ideas.md` (read it only when a step degrades). **Never type a prompt by
+hand**: prompts come only from `verify-ideas.js prompt`, and no contract or verdict is edited.
+Ideas never enter defect counts, the action order, degraded lenses or any gate.
+
+- `$RUN` = the run's artifacts dir, created once before Pass 2 (`records.json` and `checked.json`
+  live there too):
+  `mkdir -p "${TMPDIR:-${TEMP:-/tmp}}/prism" && RUN="$(mktemp -d "${TMPDIR:-${TEMP:-/tmp}}/prism/<slug>-XXXXXX")"`
+- `<findings>` = `--findings "$RUN/checked.json"`, the **final** one. With `--reproduce`, first run
+  `verify-evidence.js` again on the post-Pass-3 records into `$RUN/checked.json`. No candidates
+  (Pass 2 skipped): leave `<findings>` out.
+- `<targets>` = `--target <file>` for every file the lenses read. In `--diff` mode write the
+  collected diff context to `$RUN/diff-context.txt` and pass that as the `--target`; it lives
+  outside the repo root, and `--target` makes it quotable anyway.
+
+1. **Propose** (one Agent):
+   ```
+   node "<this skill dir>/verify-ideas.js" prompt propose <targets> <findings> > "$RUN/pass4.claude.ideas.prompt.txt"
+   ```
+   Agent (general-purpose): "Read `$RUN/pass4.claude.ideas.prompt.txt` completely and do exactly
+   what it says. Do not modify any project file. Write your final fenced block, byte for byte, to
+   `$RUN/pass4.claude.ideas.txt` with the Write tool, and end your message with the same block."
+   If the file is missing afterwards, write the agent's final message verbatim to it.
+2. **Gate:**
+   ```
+   node "<this skill dir>/verify-ideas.js" gate "$RUN/pass4.claude.ideas.txt" claude "<repo-root>" <findings> <targets> > "$RUN/claude.gated.json"
+   ```
+   `counts.gated` 0 (nothing grounded, or `degraded: true`): skip step 3; rank takes the gate output.
+3. **Check** (batches of ≤8, N = 1..⌈counts.gated/8⌉; `prompt check` confirms `check batch N/M` on
+   stderr):
+   ```
+   node "<this skill dir>/verify-ideas.js" prompt check --gated "$RUN/claude.gated.json" <findings> --batch N > "$RUN/pass4.claude.check-claude-N.prompt.txt"
+   ```
+   One fresh Agent per batch, all in one message (fresh, so it never sees the proposer's message),
+   with the same instruction: read that prompt file, do exactly what it says, modify no project
+   file, write the final fenced block byte for byte to `$RUN/pass4.claude.check-claude-N.txt`.
+   ```
+   node "<this skill dir>/verify-ideas.js" check "$RUN/claude.gated.json" "$RUN/pass4.claude.check-claude-1.txt" "<repo-root>" [--also "$RUN/pass4.claude.check-claude-N.txt"]... <targets> > "$RUN/claude.checked-ideas.json"
+   ```
+4. **Rank and render** (one engine, so no groups):
+   ```
+   node "<this skill dir>/verify-ideas.js" rank "$RUN/claude.checked-ideas.json" > "$RUN/ideas.json"
+   node "<this skill dir>/verify-ideas.js" render "$RUN/ideas.json"
+   ```
+
+---
+
 ## Final report
 
 ```
 PRISM REPORT — {target} — {timestamp}
 Mode: {default | quick | adversarial} [+reproduce] [+redteam] [diff <range>]
-Lenses: defect | design {+redteam} {+improvements} ({auto|explicit})
+Lenses: defect | design {+redteam} ({auto|explicit})
 Checklist: {path | none}
+Ideas: on (claude) | off (--no-ideas | --quick)
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
 ## REPRODUCED (demonstrated failures)
@@ -245,12 +300,14 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 - [ACTIVE] #14 verified-clean · #21 finding:PRISM-001 · #30 not-probed (out of scope)
 - [N/A] #41 "no payments" — re-activated? this file now calls Stripe
 
-## IMPROVEMENTS (only with --include-improvements)
 ## DEGRADED LENSES (infra — not findings)
 ## PRE-EXISTING, OUT OF SCOPE (only in --diff mode, max 3 lines)
 
 ## Recommended Action Order
 1. REPRODUCED first, then SUPPORTED by severity (chains before singletons). SUSPECTED items appear as questions, not tasks.
+
+## IDEAS (options, not tasks; absent with --no-ideas / --quick)
+<the output of `node "<this skill dir>/verify-ideas.js" render "$RUN/ideas.json"`, verbatim>
 ```
 
 Record schema, field rules and the confidence table: `references/record-v2.md`.
@@ -259,8 +316,11 @@ With `--format json`, write `prism-report.json` to the run's artifacts dir
 (`${TMPDIR:-${TEMP:-/tmp}}/prism/<slug>-<run-id>/`, or `--artifacts=docs` — never the project
 root). Write to a temp file, validate, atomic-rename; on failure emit the JSON inline with a
 `json_output: failed` warning. `{ "meta": {target, mode, lenses, engines, checklist, timestamp,
-counts}, "findings": [<record v2>...] }`. Fingerprints let CI dedup across runs (link only; never
-suppress a prior REJECTED).
+counts, ideas}, "findings": [<record v2>...], "ideas": [...] }`. `findings` and `meta.counts` are
+unchanged by the idea pass. `ideas` = `ideas.json` `.ideas`; `meta.ideas` = `ideas.json` `.meta`
+plus `"ran": true`. Without the pass: `"ideas": []` and `meta.ideas` =
+`{"ran": false, "reason": "--no-ideas" | "--quick"}`. Fingerprints let CI dedup across runs (link
+only; never suppress a prior REJECTED).
 
 ---
 
@@ -273,6 +333,8 @@ suppress a prior REJECTED).
 - Status is per-run truth; IDs are run-scoped; dedup across runs by fingerprint only.
 - Contradicting lenses → surface both; the Evidence pass picks a side only with quoted evidence.
 - Prose ≤3 lines per finding; the record carries the detail.
+- Ideas are not defects: IDEAS never enter the action order, defect counts, degraded lenses or any
+  gate, and an idea is never presented as a finding or a task.
 
 ## Cost & speed
 
@@ -282,14 +344,16 @@ suppress a prior REJECTED).
 | default | 5 | ⌈candidates/8⌉ chunked | 0 | 1.3–1.6× |
 | `--redteam` | 6 | ⌈candidates/8⌉ | — | +0.25× |
 | `--reproduce` | 5 | ⌈candidates/8⌉ | ≤5 test runs | 1.6–2.2× |
-| `--include-improvements` | 6 | ⌈candidates/8⌉ | — | +0.2× |
+| idea pass (Pass 4, default) | +1 proposer agent | +⌈ideas/8⌉ checker agents | — | about +30–60 s |
+| `--quick` / `--no-ideas` | — | — | — | idea pass: 0 |
 
 **Where the tokens go, and how to spend fewer:** (a) the target is sent once per discovery agent —
 use `--diff` for PR review so hunks+context travel instead of whole files; (b) this skill runs in a
 **forked context**, so invoking it at the end of a long session copies that session once before the
 agents spawn — run prism early, or in a fresh session; (c) the Evidence pass re-reads files — the
 by-file chunking above keeps each read to once per chunk; (d) parsing and quote-checking are done
-by scripts, never by the model.
+by scripts, never by the model; (e) the idea pass sends the target once more (one proposer), its
+checkers get only the ideas, and `--no-ideas` skips it.
 
 ## Companion skills
 

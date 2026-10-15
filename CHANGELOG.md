@@ -7,9 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-prism-ideas, slices S1 and S2: the idea pass's contracts and deterministic gate (S1), then the
-standalone `/prism-ideas` skill (S2). prism, prism-all and prism-codex do not run the idea pass
-yet, so their behavior does not change.
+prism-ideas, slices S1 to S3: the idea pass's contracts and deterministic gate (S1), the
+standalone `/prism-ideas` skill (S2), then the idea pass inside prism, prism-all and prism-codex,
+which replaces the Improvement lens (S3).
 
 ### Added
 - **`verify-ideas.js`** (canonical in prism-all, synced to prism and prism-codex):
@@ -57,6 +57,26 @@ yet, so their behavior does not change.
   prompt is the Claude prompt plus the preamble, byte for byte.
 
 ### Changed
+- **Pass 4 — Ideas in `/prism`, `/prism-all` and `/prism-codex`** (S3): after the Evidence pass
+  (and Pass 3 with `--reproduce`, whose records are machine-checked again first), every review runs
+  the idea pass on the same targets with the final `checked.json` as findings, on code and design
+  targets alike. `/prism` uses one Claude proposer and fresh Claude checkers (in `--diff` mode the
+  collected diff context is the target); `/prism-codex` uses `codex-run.sh ideas|idea-check`;
+  `/prism-all` runs both proposers in parallel and has each engine check the other's ideas, then
+  groups same-change ideas across engines before ranking. On by default; off with `--quick` or
+  the new `--no-ideas`.
+- **Improvement lens retired** (S3): one channel for alternatives. It is gone from the defect and
+  design lens sets (the design set is now 4 lenses), from the `<angle>` lists and from record v2's
+  category enum (legacy `improvement` records from ≤0.4 reports have no 0.5 category).
+  `--include-improvements` is still accepted as an alias so old commands work; ideas are on anyway.
+  `codex-run.sh discovery <dir> improvement` now exits 2 and points at the idea pass (selftest
+  case added).
+- **Report** (S3): the header says `Ideas: on (<engines>) | off (--no-ideas | --quick)`, and a new
+  `## IDEAS` section (the verbatim `verify-ideas.js render` output) comes after
+  `## Recommended Action Order`, replacing `## IMPROVEMENTS`. Ideas never enter defect counts, the
+  action order, degraded angles or any gate. `--format json` keeps `findings` and `meta.counts`
+  unchanged and adds top-level `ideas` and `meta.ideas` (`"ran": true` plus the rank meta, or
+  `{"ran": false, "reason": ...}`).
 - `verify-evidence.js` exports its quote matcher (`quoteWindow` / `quoteInWindow`) for
   verify-ideas.js. Its CLI output and selftest are unchanged, and the CLI only runs when invoked
   directly.

@@ -408,6 +408,8 @@ cmd_run() {
   shift 3
   [ -d "$dir" ] || die "run dir not found: '$dir' (create it with: codex-run.sh init <slug>)"
   case "$angle" in ''|*[!A-Za-z0-9._-]*|.*) die "angle must match [A-Za-z0-9._-]+ and not start with '.': '$angle'" ;; esac
+  [ "$kind" = discovery ] && [ "$angle" = improvement ] \
+    && die "the Improvement lens is retired (0.5.0): alternatives come from the idea pass (Pass 4, references/ideas.md)"
 
   local targets=() checklist="" t build=() root_set=""
   while [ $# -gt 0 ]; do
@@ -891,6 +893,8 @@ FAKE
 
   run discovery "$D" ../escape --target "$T/a.js" <<<'LENS' >/dev/null 2>&1; rc=$?
   check "path-like angle rejected (exit 2)" '[ $rc -eq 2 ]'
+  run discovery "$D" improvement --target "$T/a.js" <<<'LENS' >/dev/null 2>&1; rc=$?
+  check "retired improvement angle rejected (exit 2)" '[ $rc -eq 2 ] && [ ! -e "$D/pass1.codex.improvement.codex.txt" ]'
   run discovery "$D" nofile --target "$T/missing.js" <<<'LENS' >/dev/null 2>&1; rc=$?
   check "missing target rejected (exit 2)" '[ $rc -eq 2 ]'
   bounded bash "$SELF" discovery "$D" dangling --target <<<'LENS' >/dev/null 2>&1; rc=$?
