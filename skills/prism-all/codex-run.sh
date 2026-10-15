@@ -24,7 +24,7 @@
 #   codex-run.sh evidence <run-dir> <chunk-id> [--target F]...  <<'EOF'
 #     <evidence prompt, candidates, record v2 contract>
 #   EOF
-#   codex-run.sh ideas <run-dir> <name> --target F [--target F]... [--root DIR] [--findings F] [--context F]...
+#   codex-run.sh ideas <run-dir> <name> --root DIR --target F [--target F]... [--findings F] [--context F]...
 #   codex-run.sh idea-check <run-dir> <name> --gated F [--gated F]... [--findings F] [--batch N]
 #     (no stdin: the prompt is `verify-ideas.js prompt propose|check` with the same arguments;
 #      the answer goes to pass4.codex.<name>.codex.txt for `verify-ideas.js gate|check`)
@@ -268,6 +268,10 @@ warn_secret_files_in_cwd() {
 }
 
 # A previous security marker is the incident record (and may name files to delete by hand): keep it.
+# 0 = a UNC or device path (//host/share, \\host\share, //?/..., \\.\...). Refused by shape before any
+# [ -f ] / [ -d ] probe: on Windows the probe itself would reach out to the network.
+net_path() { case "$1" in '//'*|'\\'*|'/\'*|'\/'*) return 0 ;; esac; return 1; }
+
 archive_incident() {
   [ -f "$1" ] || return 0
   case "$(head -1 "$1" 2>/dev/null)" in
@@ -405,18 +409,21 @@ cmd_run() {
   [ -d "$dir" ] || die "run dir not found: '$dir' (create it with: codex-run.sh init <slug>)"
   case "$angle" in ''|*[!A-Za-z0-9._-]*|.*) die "angle must match [A-Za-z0-9._-]+ and not start with '.': '$angle'" ;; esac
 
-  local targets=() checklist="" t build=()
+  local targets=() checklist="" t build=() root_set=""
   while [ $# -gt 0 ]; do
     case "$kind:$1" in
       ideas:--target|ideas:--context|ideas:--findings|idea-check:--gated|idea-check:--findings)
         [ $# -ge 2 ] || die "$1 needs a file"
+        net_path "$2" && die "refusing ${1#--} '$2': a network or device path is never opened"
         { [ -f "$2" ] && [ -r "$2" ]; } || die "${1#--} is not a readable file: '$2'"
         credential_path "$2" && die "refusing credential file '$2' as ${1#--}: it would be copied into the prompt"
         build+=("$1" "$2"); shift 2 ;;
       ideas:--root)
         [ $# -ge 2 ] || die "--root needs a directory"
+        net_path "$2" && die "refusing root '$2': a network or device path is never opened"
+        [ -z "$root_set" ] || die "--root given twice"
         [ -d "$2" ] || die "root is not a directory: '$2'"
-        build+=("$1" "$2"); shift 2 ;;
+        build+=("$1" "$2"); root_set=1; shift 2 ;;
       idea-check:--batch)
         [ $# -ge 2 ] || die "--batch needs a number"
         case "$2" in ''|*[!0-9]*) die "--batch must be a whole number, got '$2'" ;; esac
@@ -437,6 +444,7 @@ cmd_run() {
     esac
   done
   [ "$kind" = discovery ] && [ ${#targets[@]} -eq 0 ] && die "discovery needs at least one --target"
+  [ "$kind" = ideas ] && [ -z "$root_set" ] && die "ideas needs --root <repo-root> (the directory the gate resolves grounds against)"
   local idea_kind=""
   case "$kind" in ideas) idea_kind=propose ;; idea-check) idea_kind=check ;; esac
   if [ -n "$idea_kind" ]; then
@@ -475,9 +483,9 @@ cmd_run() {
   local lens="$CR_SCRATCH/lens" work="$CR_SCRATCH/prompt" raw="$CR_SCRATCH/raw" msg="$CR_SCRATCH/msg" fired="$CR_SCRATCH/timedout"
   local batchinfo=""
 
-  # The prompt comes first, before anything in the run dir changes: a refused or failed build exits 2
-  # and leaves the previous answer as it was (a usage error on a re-run must not destroy a good
-  # answer, nor read later as a degraded engine).
+  # Idea kinds build their prompt first, before anything in the run dir changes: a refused or failed
+  # build exits 2 and leaves the previous answer as it was (a usage error on a re-run must not destroy
+  # a good answer, nor read later as a degraded engine).
   if [ -n "$idea_kind" ]; then
     # The idea-pass prompt (target, findings, context, instructions, contract) comes from the same
     # builder the Claude agent's prompt comes from; only the preamble below is Codex-specific.
@@ -486,9 +494,6 @@ cmd_run() {
     [ -s "$lens" ] || die "verify-ideas.js prompt $idea_kind printed nothing"
     # Which ideas this checker got, for the summary line.
     batchinfo="$(sed -n 's/^\[verify-ideas\] check batch \([0-9]*\/[0-9]*\): \(.*\)$/ batch=\1 keys=\2/p' "$CR_SCRATCH/build.err" | head -n 1 | LC_ALL=C tr -cd '[:print:]')"
-  else
-    cat > "$lens"
-    [ -s "$lens" ] || die "empty $kind prompt on stdin"
   fi
 
   # Pre-created so a killed call or missing file reads as DEGRADED, never silently dropped. rm
@@ -497,6 +502,12 @@ cmd_run() {
   archive_incident "$out"
   rm -f -- "$out" "$out.json" "$prompt"
   echo "[fallback: not-started]" > "$out" || die "cannot write in $dir"
+  # Discovery and evidence read stdin only after the reset: an empty prompt on a re-run exits 2 and
+  # leaves the not-started marker, never the previous answer.
+  if [ -z "$idea_kind" ]; then
+    cat > "$lens"
+    [ -s "$lens" ] || die "empty $kind prompt on stdin"
+  fi
 
   META_MODEL="${PRISM_CODEX_MODEL:-default}"; META_EFFORT="$effort"; META_SANDBOX="$sandbox"; META_SECONDS=0
   local status="" took=0 bytes rc allow="" found=""
@@ -842,14 +853,14 @@ FAKE
 
   if [ -f "$HERE/$IDEAS" ] && command -v node >/dev/null 2>&1; then
     printf '[]\n' > "$T/findings.json"; printf 'note: keyword scoring misses strong items\n' > "$T/notes.md"; printf 'K=v\n' > "$T/.env"
-    out="$(FAKE_MODE=ok run ideas "$D" ideas --target "$T/a.js" --findings "$T/findings.json" --context "$T/notes.md" 2>/dev/null </dev/null)"
+    out="$(FAKE_MODE=ok run ideas "$D" ideas --root "$T" --target "$T/a.js" --findings "$T/findings.json" --context "$T/notes.md" 2>/dev/null </dev/null)"
     P="$D/pass4.codex.ideas.prompt.txt"
-    node "$HERE/$IDEAS" prompt propose --target "$T/a.js" --findings "$T/findings.json" --context "$T/notes.md" > "$T/claude-prompt.txt" 2>/dev/null
+    node "$HERE/$IDEAS" prompt propose --root "$T" --target "$T/a.js" --findings "$T/findings.json" --context "$T/notes.md" > "$T/claude-prompt.txt" 2>/dev/null
     check "ideas: Codex prompt = preamble + the exact bytes the Claude agent gets" '[ "$(head -1 "$P")" = "SANDBOX SAFETY POLICY (mandatory, applies to every shell command you execute):" ] && [ -s "$T/claude-prompt.txt" ] && tail -c "$(wc -c < "$T/claude-prompt.txt")" "$P" | cmp -s - "$T/claude-prompt.txt" && [ "$(( $(wc -c < "$P") - $(wc -c < "$T/claude-prompt.txt") ))" -eq "$( { preamble; printf "\n==== AGENT PROMPT BELOW ====\n"; } | wc -c)" ]'
     check "ideas: no stdin read, answer in pass4 file, contract last in the prompt" 'grep -q "off by one" "$D/pass4.codex.ideas.codex.txt" && printf "%s" "$out" | grep -q "pass4 ideas ideas: status=ok" && [ "$(grep -n "<<<PRISM-IDEAS v1>>>" "$P" | tail -1 | cut -d: -f1)" -gt "$(grep -n "^## Idea pass: propose" "$P" | cut -d: -f1)" ]'
-    run ideas "$D" ideas2 --target "$T/a.js" --context "$T/.env" </dev/null >/dev/null 2>&1; rc=$?
+    run ideas "$D" ideas2 --root "$T" --target "$T/a.js" --context "$T/.env" </dev/null >/dev/null 2>&1; rc=$?
     check "ideas: a credential file as context is refused (exit 2)" '[ $rc -eq 2 ]'
-    run ideas "$D" ideas3 --target "$T/a.js" --checklist "$T/notes.md" </dev/null >/dev/null 2>&1; rc=$?
+    run ideas "$D" ideas3 --root "$T" --target "$T/a.js" --checklist "$T/notes.md" </dev/null >/dev/null 2>&1; rc=$?
     check "ideas: options of other kinds are refused (exit 2)" '[ $rc -eq 2 ]'
     printf '%s\n' '{"kind":"prism-ideas-gate","version":1,"engine":"claude","ideas":[{"key":"claude-1-abcd","engine":"claude","status":"GATED","lens":"route","title":"t","problem":"p","grounds":["a.js:1 — function f(a){ return a; }"],"proposal":"x","replaces":"y","cost":"S","cost_note":"n","effect":"e","risk":"r"}]}' > "$T/gated.json"
     FAKE_MODE=ok run idea-check "$D" check-1 --gated "$T/gated.json" --batch 1 </dev/null >/dev/null 2>&1
@@ -861,10 +872,19 @@ FAKE
     out="$(FAKE_MODE=ideasok run ideas "$D" ideas4 --target "$T/a.js" --root "$T" 2>/dev/null </dev/null)"
     check "ideas --root: the root is named, headers are root-relative; fence=yes" 'grep -q "^Repository root: " "$D/pass4.codex.ideas4.prompt.txt" && grep -qx -- "--- BEGIN TARGET: a.js ---" "$D/pass4.codex.ideas4.prompt.txt" && printf "%s" "$out" | grep -q "pass4 ideas ideas4: status=ok fence=yes model="'
     printf '{"x":1}\n' > "$T/notfindings.json"
-    err="$(run ideas "$D" ideas --target "$T/a.js" --findings "$T/notfindings.json" 2>&1 >/dev/null </dev/null)"; rc=$?
+    err="$(run ideas "$D" ideas --root "$T" --target "$T/a.js" --findings "$T/notfindings.json" 2>&1 >/dev/null </dev/null)"; rc=$?
     check "a builder refusal on a re-run: exit 2 with its reason, the previous answer untouched" '[ $rc -eq 2 ] && printf "%s" "$err" | grep -q "failed: \[verify-ideas\] the findings file must be" && grep -q "off by one" "$D/pass4.codex.ideas.codex.txt"'
-    FAKE_MODE=ok run ideas "$D" ideasbig --target "$T/big.txt" </dev/null >/dev/null 2>&1
+    FAKE_MODE=ok run ideas "$D" ideasbig --root "$T" --target "$T/big.txt" </dev/null >/dev/null 2>&1
     check "ideas: an oversized prompt names the idea-pass remedies" 'grep -q "^\[fallback: prompt-too-large\].*--engine claude" "$D/pass4.codex.ideasbig.codex.txt"'
+    err="$(run ideas "$D" noroot --target "$T/a.js" 2>&1 >/dev/null </dev/null)"; rc=$?
+    check "ideas without --root: usage error (exit 2), nothing written" '[ $rc -eq 2 ] && printf "%s" "$err" | grep -q "needs --root" && [ ! -e "$D/pass4.codex.noroot.codex.txt" ]'
+    local np badp=0
+    for np in '//attacker.invalid/share' '\\attacker.invalid\share' '//?/C:/x' '\\.\pipe\x' '/\attacker.invalid\share'; do
+      err="$(run ideas "$D" unc --root "$np" --target "$T/a.js" 2>&1 >/dev/null </dev/null)"; [ $? -eq 2 ] && printf '%s' "$err" | grep -q "network or device path" || badp=1
+      err="$(run ideas "$D" unc --root "$T" --target "$np" 2>&1 >/dev/null </dev/null)"; [ $? -eq 2 ] && printf '%s' "$err" | grep -q "network or device path" || badp=1
+      err="$(run idea-check "$D" unc --gated "$np" 2>&1 >/dev/null </dev/null)"; [ $? -eq 2 ] && printf '%s' "$err" | grep -q "network or device path" || badp=1
+    done
+    check "ideas / idea-check: a UNC or device path as --root or a file option is refused by shape (exit 2)" '[ $badp -eq 0 ] && [ ! -e "$D/pass4.codex.unc.codex.txt" ]'
   else
     echo "skip ideas cases (no $IDEAS here or no node)"
   fi
@@ -879,6 +899,10 @@ FAKE
   check "discovery without target rejected (exit 2)" '[ $rc -eq 2 ]'
   run discovery "$D" nolens --target "$T/a.js" < /dev/null >/dev/null 2>&1; rc=$?
   check "empty prompt on stdin rejected (exit 2)" '[ $rc -eq 2 ]'
+  FAKE_MODE=ok run discovery "$D" rerun --target "$T/a.js" <<<'LENS' >/dev/null 2>&1
+  grep -q "off by one" "$D/pass1.codex.rerun.codex.txt"; pre=$?
+  run discovery "$D" rerun --target "$T/a.js" < /dev/null >/dev/null 2>&1; rc=$?
+  check "empty-stdin discovery re-run: exit 2, the previous answer replaced by the not-started marker" '[ $pre -eq 0 ] && [ $rc -eq 2 ] && [ "$(cat "$D/pass1.codex.rerun.codex.txt")" = "[fallback: not-started]" ]'
   local cred bad=0
   for cred in .env .ENV operator.env dotenv secrets.yaml service-credentials.json id_dsa api.token; do
     printf 'K=v\n' > "$T/$cred"

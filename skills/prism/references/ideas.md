@@ -44,20 +44,23 @@ bash "<skill dir>/codex-run.sh" ideas <run-dir> ideas --root <repo-root> --targe
      [--findings checked.json] [--context <file>]...                     # Codex: same prompt + preamble
 ```
 
-The builder refuses credential files, network paths, a `--target` inside the root that a link
-takes outside it, and a findings file in which no record was machine-checked (`records.json`
-instead of `checked.json`). The prompt opens with `Repository root: <root>. Quote repository files
+`--root` is required: without it both commands exit 2. The builder refuses credential files,
+network paths, a `--target` inside the root that a link takes outside it, and a findings file in
+which no record was machine-checked (`records.json` instead of `checked.json`).
+The prompt opens with `Repository root: <root>. Quote repository files
 by their path relative to it.`; every file block is headed by its root-relative path (forward
 slashes), or its absolute path when it lies outside the root, so a quote copied from a header
 resolves in the gate. Then, in this order:
 
-1. **Target content**, verbatim (the same prefix the discovery lenses got).
+1. **TARGET** files, verbatim, each headed `--- BEGIN TARGET: <path> ---`, the path named as above
+   (root-relative, or absolute outside the root), not as given on the command line.
 2. **FINDINGS** (companion mode only): every `SUPPORTED` / `REPRODUCED` record of the final
    `checked.json`, one line each: `PRISM-NNN | STATUS | SEV | file:lines | claim`. Every field is
    flattened to one line; a severity outside CRIT/HIGH/MED/LOW or a malformed line range prints
-   `?`, and a secret-shaped claim prints `[claim withheld: secret-shaped]`. Standalone mode has none.
-3. **CONTEXT** files (`--context`), each headed `CONTEXT: <name as given>`. Data an idea needs as
-   ground (exported sheets, logs, measurements) must arrive this way so its quote can be checked.
+   `?`, and a secret-shaped claim prints `(claim withheld: secret-shaped)`. Standalone mode has none.
+3. **CONTEXT** files (`--context`), each headed `--- BEGIN CONTEXT: <path> ---`, the path named the
+   same way. Data an idea needs as ground (exported sheets, logs, measurements) must arrive this
+   way so its quote can be checked.
 4. **`templates/ideas-prompt.md`**: the three lenses (class: fix the class; route: a different
    route; subtract: remove or reuse) and the rubric.
 5. **`templates/ideas-contract.md`**, appended last.
@@ -200,5 +203,5 @@ proposal, effect, risk, grounds with their strength, and the checker's reason), 
 drops. With no idea left it says `- none: the proposers failed (see Degraded)` when every proposer
 degraded, else `- none: no idea survived the gate and the check`. Certainty language follows the
 verdict: `KEEP` "worth doing", `WEAK` "worth a look", `UNCHECKED` "not checked". Model text is
-flattened, re-checked for secrets (`[withheld: secret-shaped]`) and made inert: no HTML, images,
+flattened, re-checked for secrets (`(withheld: secret-shaped)`) and made inert: no HTML, images,
 links (`[` and `]` escaped), mentions or `owner/repo#N` references (a zero-width space breaks them).

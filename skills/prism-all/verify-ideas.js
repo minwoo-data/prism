@@ -34,7 +34,7 @@
  *   node verify-ideas.js gate <proposer-out> <claude|codex> <repo-root> [--findings checked.json] [--target <file>]... [--context <file>]...
  *   node verify-ideas.js check <gated.json> <checker-out> <repo-root> [--also <checker-out>]... [--target <file>]... [--context <file>]... [--findings f]
  *   node verify-ideas.js rank <checked-ideas.json>... [--groups groups.json]
- *   node verify-ideas.js prompt propose --target <file>... [--root <dir>] [--findings checked.json] [--context <file>]...
+ *   node verify-ideas.js prompt propose --root <repo-root> --target <file>... [--findings checked.json] [--context <file>]...
  *   node verify-ideas.js prompt check --gated <gated.json>... [--findings checked.json] [--batch N]
  *   node verify-ideas.js render <ideas.json>
  *   node verify-ideas.js --selftest
@@ -389,7 +389,8 @@ function verifyQuote(raw, env) {
   return fail(repoWhy || first || 'QUOTE_MISMATCH');   // the repo file's reason, when there is one
 }
 
-const withheld = (ref, reason) => (ref ? `${ref} — [quote withheld: ${reason}]` : `[ground withheld: ${reason}]`);
+// Parentheses, not brackets: the report's inert escaping would show brackets as \[...\].
+const withheld = (ref, reason) => (ref ? `${ref} — (quote withheld: ${reason})` : `(ground withheld: ${reason})`);
 
 function checkGround(raw, env) {
   const fid = String(raw).trim().match(FINDING_RE);
@@ -553,7 +554,7 @@ function validateVerdict(o) {
     v.cost = cost.toUpperCase();
     const note = str(o.cost_note);
     // The note is shown in the report like the reason, so it gets the same secret check.
-    if (note && !isPlaceholder(note)) v.cost_note = looksSecretText(note) ? '[cost note withheld: secret-shaped]' : note.slice(0, 300);
+    if (note && !isPlaceholder(note)) v.cost_note = looksSecretText(note) ? '(cost note withheld: secret-shaped)' : note.slice(0, 300);
   }
   return { ok: true, v };
 }
@@ -1197,7 +1198,7 @@ function selftest() {
 
   guard('prompts', () => {
     const read = (rel) => fs.readFileSync(path.join(__dirname, rel), 'utf8');
-    let r = buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [ctxFile], findings });
+    let r = buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [ctxFile], findings, root: repo });
     const tx = r.text || '';
     const at = (needle) => tx.indexOf(needle);
     t('propose prompt: target < findings < context < instructions < contract, contract last',
@@ -1206,10 +1207,10 @@ function selftest() {
       tx.endsWith(read('templates/ideas-contract.md').replace(/\s+$/, '') + '\n'));
     t('propose prompt lists only machine-checked SUPPORTED / REPRODUCED findings',
       /PRISM-001 \| SUPPORTED/.test(tx) && /PRISM-004 \| REPRODUCED/.test(tx) && !/PRISM-00[2356] \|/.test(tx));
-    r = buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [], findings: null });
+    r = buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [], findings: null, root: repo });
     t('standalone propose prompt has no FINDINGS section', !!r.text && r.text.indexOf('==== FINDINGS') === -1);
-    t('propose refuses a credential file as target or context', /credential/.test(buildPropose({ targets: [path.join(repo, '.env')], contexts: [], findings: null }).error || '') &&
-      /credential/.test(buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [path.join(repo, 'deploy.token')], findings: null }).error || ''));
+    t('propose refuses a credential file as target or context', /credential/.test(buildPropose({ targets: [path.join(repo, '.env')], contexts: [], findings: null, root: repo }).error || '') &&
+      /credential/.test(buildPropose({ targets: [path.join(repo, 'src', 'score.js')], contexts: [path.join(repo, 'deploy.token')], findings: null, root: repo }).error || ''));
     t('the propose instructions name the three lenses', LENSES.every((l) => read('templates/ideas-prompt.md').indexOf('**' + l + ' (') !== -1));
 
     const many = G([idea({ title: 'p1', grounds: ['PRISM-001'] }), idea({ title: 'p2', grounds: [QUOTE, 'src/score.js:3 — not in the file at all'] }), idea({ title: 'p3' }),
@@ -1261,6 +1262,9 @@ function selftest() {
     const ARGS = ['--target', score, '--findings', fjson, '--context', ctxFile];
     let r = run(['prompt', 'propose'].concat(ARGS, ['--root', repo]));
     t('CLI ARGS: prompt propose --root', r.status === 0 && r.stdout.indexOf('--- BEGIN TARGET: src/score.js ---') !== -1);
+    r = run(['prompt', 'propose'].concat(ARGS));
+    t('CLI: prompt propose without --root is a usage error (exit 2)', r.status === 2 && /needs --root/.test(r.stderr) && !r.stdout);
+    t('the propose builder refuses a missing root', /--root/.test(buildPropose({ targets: [score], contexts: [], findings: null }).error || ''));
     const ans = path.join(tmp, 'args-answer.txt'), gatedF = path.join(tmp, 'args-gated.json');
     fs.writeFileSync(ans, fence([idea({ grounds: [QUOTE, 'PRISM-001'] })]));
     r = run(['gate', ans, 'claude', repo].concat(ARGS));
@@ -1299,7 +1303,7 @@ function selftest() {
     r = buildPropose({ targets: [score], contexts: [], findings: forged, root: repo });
     const fl = (r.text || '').split('\n').find((l) => l.indexOf('PRISM-007') === 0) || '';
     t('finding lines: one line per record, bad severity / lines -> ?, secret-shaped claim withheld',
-      fl === 'PRISM-007 | SUPPORTED | ? | src/a.js --- END:? | [claim withheld: secret-shaped]' && (r.text || '').indexOf('abcd1234efgh5678') === -1 && !/^==== FAKE/m.test(r.text || ''));
+      fl === 'PRISM-007 | SUPPORTED | ? | src/a.js --- END:? | (claim withheld: secret-shaped)' && (r.text || '').indexOf('abcd1234efgh5678') === -1 && !/^==== FAKE/m.test(r.text || ''));
 
     // A link inside the root to a file outside it: lexically inside, so never quotable.
     const link = path.join(repo, 'inlink');
@@ -1329,11 +1333,17 @@ function selftest() {
 
     const g8 = G([idea({ title: 'eight' })]);
     const c8 = check(g8, [CHECK([{ key: g8.ideas[0].key, verdict: 'WEAK', reason: 'cost understated', cost: 'L', cost_note: `rotate ${KV_SECRET}` }])], env);
-    t('a secret-shaped checker cost_note is withheld', c8.ideas[0].check.cost_note === '[cost note withheld: secret-shaped]' && JSON.stringify(c8).indexOf('abcd1234efgh5678') === -1);
+    t('a secret-shaped checker cost_note is withheld', c8.ideas[0].check.cost_note === '(cost note withheld: secret-shaped)' && JSON.stringify(c8).indexOf('abcd1234efgh5678') === -1);
+    const r8 = render(rank([JSON.parse(JSON.stringify(c8))], null)).text || '';
+    const wq = G([idea({ grounds: ['src/score.js:3 — this text is nowhere in that file'] })]).ideas[0].ground_checks[0].ground;
+    const wg = G([idea({ grounds: ['no location in this ground at all'] })]).ideas[0].ground_checks[0].ground;
+    t('withheld markers use parentheses, so the report shows them without escapes',
+      r8.indexOf('(cost set to L: (cost note withheld: secret-shaped))') !== -1 && r8.indexOf('\\[') === -1 &&
+      / — \(quote withheld: [A-Z_]+\)$/.test(wq) && /^\(ground withheld: [A-Z_]+\)$/.test(wg));
     const rk8 = rank([c8], null);
     rk8.ideas[0].proposal = `use ${KV_SECRET}`; rk8.ideas[0].check.cost_note = `see ${KV_SECRET}`;
     const t8 = render(rk8).text || '';
-    t('render re-checks model text for secrets', t8.indexOf('abcd1234efgh5678') === -1 && /proposal: \[withheld: secret-shaped\]/.test(t8) && /\(cost set to L: \[withheld: secret-shaped\]\)/.test(t8));
+    t('render re-checks model text for secrets', t8.indexOf('abcd1234efgh5678') === -1 && /proposal: \(withheld: secret-shaped\)/.test(t8) && /\(cost set to L: \(withheld: secret-shaped\)\)/.test(t8));
 
     const t4 = render(rank([check(G([idea({ title: 'see [docs](http://evil.example) and owner/repo#12' })]), [], env)], null)).text || '';
     t('render escapes link brackets and breaks owner/repo#N', t4.indexOf('\\[docs\\](http://evil.example)') !== -1 && t4.indexOf('owner/repo#12') === -1 && t4.indexOf('owner/repo#​12') !== -1);
@@ -1413,20 +1423,21 @@ function findingLines(findings, only) {
     const ec = r._evidence_check;
     if (!GROUNDED.has(r.status) || !ec || ec.checked !== true || ec.quote_found !== true) continue;
     const sev = oneLine(r.severity), ln = oneLine(r.lines);
-    const claim = looksSecretText(String(r.claim == null ? '' : r.claim)) ? '[claim withheld: secret-shaped]' : oneLine(r.claim, 300);
+    const claim = looksSecretText(String(r.claim == null ? '' : r.claim)) ? '(claim withheld: secret-shaped)' : oneLine(r.claim, 300);
     lines.push([oneLine(id), r.status, SEVERITY.test(sev) ? sev : '?', r.file ? `${oneLine(r.file, 200)}:${LINES_SHAPE.test(ln) ? ln : '?'}` : '?', claim].join(' | '));
   }
   return lines;
 }
 
 // -> { text } | { error }
-// o.root (default: cwd) is the root gate resolves grounds against. The prompt names it, and a file
+// o.root (required, --root) is the root gate resolves grounds against. The prompt names it, and a file
 // inside it is headed by its root-relative path (forward slashes) so a quote of it resolves; a file
 // outside keeps its absolute path (gate matches that as a quotable file).
 function buildPropose(o) {
   if (!o.targets.length) return { error: 'propose needs at least one --target' };
+  if (typeof o.root !== 'string' || !o.root) return { error: 'propose needs the repo root (--root <repo-root>)' };
   for (const f of o.targets.concat(o.contexts)) { const why = refuseFile(f); if (why) return { error: why }; }
-  const root = path.resolve(String(o.root || '.')), rootReal = realOr(root);
+  const root = path.resolve(o.root), rootReal = realOr(root);
   if (!rootReal) return { error: `repo root not found: ${root}` };
   // Inside the root as written but outside once links resolve: gate calls every quote of it
   // PATH_OUTSIDE_ROOT, and it is no quotable outside file either.
@@ -1512,7 +1523,7 @@ const VERDICT_WORD = { KEEP: 'worth doing', WEAK: 'worth a look', UNCHECKED: 'no
 // get a zero-width space; a backslash would not stop them.
 const inert = (s) => oneLine(s).replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[[\]]/g, '\\$&').replace(/@(?=\w)/g, '@\u200B')
   .replace(/([\w.-]\/[\w.-]+)#(?=\d)/g, '$1#\u200B');
-const WITHHELD = '[withheld: secret-shaped]';
+const WITHHELD = '(withheld: secret-shaped)';
 
 // The report's IDEAS section, from rank output. Certainty language follows the verdict.
 function render(r) {
@@ -1576,7 +1587,7 @@ function usage(msg) {
   process.stderr.write(`[verify-ideas] ${msg}\nusage: verify-ideas.js gate <proposer-out> <claude|codex> <repo-root> [--findings f] [--target f]... [--context f]...\n` +
     `       verify-ideas.js check <gated.json> <checker-out> <repo-root> [--also f]... [--target f]... [--context f]... [--findings f (accepted, unused)]\n` +
     `       verify-ideas.js rank <checked-ideas.json>... [--groups g.json]\n` +
-    `       verify-ideas.js prompt propose --target f [--target f]... [--root dir] [--findings f] [--context f]...\n` +
+    `       verify-ideas.js prompt propose --root dir --target f [--target f]... [--findings f] [--context f]...\n` +
     `       verify-ideas.js prompt check --gated f [--gated f]... [--findings f] [--batch N]\n` +
     `       verify-ideas.js render <ideas.json>\n       verify-ideas.js --selftest\n`);
   process.exit(2);
@@ -1672,7 +1683,8 @@ function main(argv) {
     const { pos, opts } = splitArgs(argv.slice(2), ['--target', '--context'], ['--findings', '--root']);
     if (pos.length) usage(`prompt propose takes no positional arguments, got ${pos[0]}`);
     shapeOk([opts['--findings'], opts['--root']].concat(opts['--target'], opts['--context']));
-    const root = opts['--root'] === undefined ? process.cwd() : opts['--root'];
+    if (opts['--root'] === undefined) usage('prompt propose needs --root <repo-root> (the directory gate resolves grounds against)');
+    const root = opts['--root'];
     if (!fs.existsSync(root)) usage(`repo root not found: ${root}`);
     for (const f of opts['--target'].concat(opts['--context'])) if (!fs.existsSync(f)) usage(`file not found: ${f}`);
     const findings = opts['--findings'] !== undefined ? readJson(opts['--findings'], 'findings file') : null;

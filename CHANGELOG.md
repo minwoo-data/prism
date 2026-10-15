@@ -49,7 +49,9 @@ yet, so their behavior does not change.
   `templates/ideas-prompt.md` and `templates/idea-check-prompt.md` (new) plus the contracts, the
   same bytes for both engines. `verify-ideas.js render`: the report's IDEAS section from `rank`,
   with model text made inert (no HTML, images or mentions). `gate` and `check` take `--target`
-  files as quotable grounds, like `--context`.
+  files as quotable grounds, like `--context`. `prompt propose` (and `codex-run.sh ideas`) require
+  `--root <repo-root>`: the prompt opens with that root and heads each file by its root-relative
+  path (absolute outside the root), so a quote copied from a header resolves in the gate.
 - `codex-run.sh ideas|idea-check`: the Codex side of the idea pass. It runs the same prompt
   builder (no stdin) and adds only the Sandbox Safety Preamble; the selftest checks that the Codex
   prompt is the Claude prompt plus the preamble, byte for byte.
