@@ -62,7 +62,7 @@ yet, so their behavior does not change.
   `--strict`.
 - `verify-independence.js` treats a non-fatal Codex prerequisite as a warning in the flag check too
   (prism-ideas runs Claude-only without Codex).
-- `sync-review-parsers.sh` also generates `skills/prism-ideas` (37 copies).
+- `sync-review-parsers.sh` also generates `skills/prism-ideas` (36 copies).
 
 ### Fixed
 - `sync-review-parsers.sh` reported "synced" even when a copy failed to land (a failed `mv` inside
