@@ -7,17 +7,20 @@
 "AI 리뷰어 여러 명이 동의했다"는 증거가 아니다 — prism의 5 agents는 전부 같은 모델이라 같은 오해를 공유할 수 있다. 그래서 v0.2부터 **합의는 조사 우선순위를 정하고, 확정은 증거가 한다.** 모든 후보가 Evidence pass를 거쳐 `file:lines@symbol` 고정 + 실행 경로 추적 + 근거 줄 인용을 받아야 하고, `--reproduce`면 임시 디렉토리의 일회용 테스트로 실패를 직접 시연한다.
 
 ```
-/prism <target>                        -> discovery (5 렌즈) + Evidence pass
+/prism <target>                        -> discovery (5 렌즈) + Evidence pass + 아이디어 pass
 /prism <target> --reproduce            -> + 최소 실패 테스트 (임시 디렉토리 — 프로젝트는 불변)
 /prism --diff main...HEAD              -> 변경 리뷰: 이 diff가 새로 만드는 회귀는?
 /prism <target> --quick                -> discovery만 (전부 SUSPECTED로 보고)
 /prism <target> --adversarial          -> Evidence pass가 자기 REJECT에 반박 후 확정
 /prism <target> --redteam              -> + 공격자 관점 Red Team 렌즈 (구 prism-devil 흡수)
-/prism <target> --include-improvements -> Improvement 렌즈 추가 (분리 집계)
+/prism <target> --no-ideas             -> 아이디어 pass 생략 (근거 있는 대안)
 /prism <target> --format json          -> 기계가독 prism-report.json (finding record v2)
+/prism-ideas <target>                  -> 리뷰 없이 대안만 (Claude + Codex 교차 검사)
 ```
 
-모든 finding의 상태: `SUSPECTED`(추론만) → `SUPPORTED`(위치+경로+인용) → `REPRODUCED`(실패 테스트 실행됨) / `REJECTED`(반증 인용). Target은 코드 파일/디렉토리/주제 — 문서는 `/triad`로.
+모든 finding의 상태: `SUSPECTED`(추론만) → `SUPPORTED`(위치+경로+인용) → `REPRODUCED`(실패 테스트 실행됨) / `REJECTED`(반증 인용). Target은 코드 파일/디렉토리/주제/설계 문서 — 문서는 design 렌즈셋(설계가 맞는가)으로 보고, 글 품질은 `/triad`로.
+
+Evidence pass 뒤에는 **아이디어 pass**가 "대신 무엇을 할까?"를 묻고, 근거 있는 대안을 따로 `## IDEAS` 아래에 적는다 — 사람이 고를 선택지이지 finding이 아니고, 카운트에도 들어가지 않는다.
 
 ---
 
@@ -45,6 +48,7 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 |---|---|
 | 넓게 결함 찾기 (증거 등급) | **prism** (이 플러그인) |
 | Claude + Codex 교차 검토 | `/prism-all` (이 플러그인에 포함) |
+| 판정 대신 근거 있는 대안 (PRD 전, 리뷰 뒤) | `/prism-ideas` (이 플러그인에 포함) |
 | 보안·공격자 관점 심층 프로브 | `/prism <target> --redteam` (prism-devil은 0.3.0에서 흡수) |
 | 실제 코드 수정 반복 | [mangchi](https://github.com/minwoo-data/mangchi) |
 | 설계 문서가 맞는지 (충돌·코드 대비 주장 검증·실패 모드) | `/prism <doc>` (design 렌즈셋, markdown이면 자동) |
@@ -72,7 +76,7 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 ### 3. 사용
 
 ```
-/prism src/services/auth.py                 # 기본: 5 렌즈 + Evidence pass
+/prism src/services/auth.py                 # 기본: 5 렌즈 + Evidence pass + 아이디어 pass
 /prism src/services/auth.py --quick         # discovery만 (전부 SUSPECTED)
 /prism src/services/auth.py --adversarial   # Evidence pass가 자기 REJECT에 반박
 /prism .                                    # 프로젝트 전체 리뷰
@@ -82,17 +86,18 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 
 ---
 
-## 이 플러그인이 제공하는 3 variant
+## 이 플러그인이 제공하는 skill (3 variant + prism-ideas)
 
-`prism` 플러그인을 설치하면 같은 5-렌즈 프레임워크를 공유하되 **판단 주체가 다른** 3 skill이 함께 들어옵니다:
+`prism` 플러그인을 설치하면 같은 5-렌즈 프레임워크를 공유하되 **판단 주체가 다른** 리뷰 skill 3개와, 아이디어 pass만 따로 돌리는 `/prism-ideas`가 함께 들어옵니다:
 
 | Skill | 엔진 | 언제 쓰나 |
 |---|---|---|
 | `/prism` | **Claude** — 5 렌즈 병렬 + Evidence pass | 기본. Wall-time 가장 빠름, 외부 CLI 불필요, `--diff`는 여기만. |
 | `/prism-codex` | **Codex CLI** — 5 호출 + Codex Evidence pass, gpt-5.5 | Claude 토큰 절약 / 다른 모델 관점. `codex-cli >= 0.125.0` 필요. |
 | `/prism-all` | **Claude + Codex 병렬** — 10 discovery + Evidence pass | 최고 신뢰. 같은 렌즈에서 두 엔진이 모두 flag한 이슈는 Tier 1. `--verifier=claude\|codex\|both`로 판정자 선택. |
+| `/prism-ideas` | **Claude + Codex** (Codex 없으면 Claude만) — 제안·gate·교차 검사·순위 | 리뷰 없이 대안만. `--findings`로 이전 런의 `checked.json` 재사용. |
 
-세 variant 전부 한 번의 플러그인 설치에 포함. Codex CLI 전제 상세: 자매 플러그인의 [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md) ("model does not exist" 에러는 계정 문제가 아니라 CLI 버전 문제).
+네 skill 전부 한 번의 플러그인 설치에 포함. Codex CLI 전제 상세: 자매 플러그인의 [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md) ("model does not exist" 에러는 계정 문제가 아니라 CLI 버전 문제).
 
 ---
 
@@ -106,9 +111,9 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 | **Integration & Regression** | 호출자 계약 파괴, 스키마/설정 드리프트, 하위호환, 숨은 결합 |
 | **Testability & Observability** | 삼켜진 예외, 조용한 폴백, 거짓 로그, 신호 없는 실패 |
 
-선택 렌즈: **Red Team** (`--redteam`) — 구 `prism-devil`에서 흡수한 공격자 마인드 심층 프로브. 10개 공격 표면을 우선순위대로 훑고, 체크리스트 항목에 교차 참조하고, 둘 이상이 합쳐지는 공격 체인을 이름 붙인다. 다른 렌즈와 똑같이 Evidence pass를 거친다. **Improvement** (`--include-improvements`) — 결함 리포트를 시끄럽게 하지 않도록 기본에서 제외.
+선택 렌즈: **Red Team** (`--redteam`) — 구 `prism-devil`에서 흡수한 공격자 마인드 심층 프로브. 10개 공격 표면을 우선순위대로 훑고, 체크리스트 항목에 교차 참조하고, 둘 이상이 합쳐지는 공격 체인을 이름 붙인다. 다른 렌즈와 똑같이 Evidence pass를 거친다. Improvement 렌즈는 0.5.0에서 은퇴했다 — 대안은 아래 **아이디어 pass**에서 나오고, `--include-improvements`는 그 pass를 켜는 별칭으로만 남았다.
 
-**문서·설계·계획**에는 **design 렌즈셋**이 자동으로 붙는다 (충돌·재사용 / 코드 대비 주장 검증 / devil's advocate / 설계된 시스템의 robustness / 개선안). prism은 "설계가 맞는가", triad는 "문서로서 잘 쓰였는가"를 본다. `/ddaro:review`가 둘 다 돌린다.
+**문서·설계·계획**에는 **design 렌즈셋**이 자동으로 붙는다 (충돌·재사용 / 코드 대비 주장 검증 / devil's advocate / 설계된 시스템의 robustness). prism은 "설계가 맞는가", triad는 "문서로서 잘 쓰였는가"를 본다. `/ddaro:review`가 둘 다 돌린다.
 
 각 렌즈는 **forked context**에서 실행 — 서로의 응답을 볼 수 없다. 프롬프트는 **target 먼저, 렌즈 정의 나중** 순으로 조립해 공통 prefix가 prompt cache를 타게 한다.
 
@@ -123,6 +128,10 @@ discovery 후 모든 finding은 **후보**다 — 자동 확정은 없다:
 
 모든 finding은 구조화된 **record v2**로 나간다 (`id`, `fingerprint`, `file/lines/symbol`, `category`, `severity`, `status`, `claim`, `preconditions`, `execution_path`, `evidence`, `reproduction`, `confidence`, 체크리스트/체인 참조). 스키마: `skills/prism/references/record-v2.md`.
 
+## 아이디어 pass (Pass 4)
+
+렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"를 묻는다. Evidence pass 뒤에 제안자가 같은 target과 기계 검증된 finding을 읽고 아이디어 렌즈마다 최대 3개의 대안을 낸다: **class**(문제의 부류를 고침), **route**(다른 길), **subtract**(빼거나 재사용). 아이디어마다 스크립트가 확인할 수 있는 근거가 있어야 한다 — `SUPPORTED`/`REPRODUCED` finding ID, 또는 그 줄에 실제로 있는 `file:lines — 인용`. 근거 없는 아이디어는 `verify-ideas.js`가 떨어뜨린다(느낌으로 거르지 않는다). 그 아이디어를 쓰지 않은 checker(`/prism-all`에서는 다른 엔진)가 KEEP / WEAK / DROP을 판정하고, DROP에는 검증된 인용이 필요하다. 리포트는 아이디어를 finding과 따로 `## IDEAS` 아래에 적는다 — 카운트·액션 순서·게이트에 들어가지 않는다. `--no-ideas`나 `--quick`이면 끄고, `/prism-ideas`는 이 pass만 돌린다.
+
 ## Features
 
 - **병렬 discovery** — 5 렌즈를 한 tool call로 발사. wall-time ≈ 가장 느린 하나.
@@ -132,6 +141,7 @@ discovery 후 모든 finding은 **후보**다 — 자동 확정은 없다:
 - **파일 단위 청킹 Evidence pass** — 한 청크가 한 파일을 한 번만 읽는다. 청크 하나가 실패해도 그 후보들만 강등.
 - **Adversarial 모드** — Evidence pass가 자기 REJECT에 반박한 뒤 확정.
 - **Red Team 렌즈** — `--redteam`으로 공격자 관점 6번째 에이전트 추가. 보안 체크리스트 커버리지와 공격 체인 섹션이 리포트에 생긴다.
+- **아이디어 pass** — 리뷰 뒤 근거 있는 대안, 교차 검사, finding과 분리(`--no-ideas`로 생략).
 - **코드 수정 없음** — prism은 순수 reviewer. 실제 수정은 `/mangchi`.
 
 ---
@@ -139,8 +149,9 @@ discovery 후 모든 finding은 **후보**다 — 자동 확정은 없다:
 ## 모드와 출력
 
 ```
-/prism src/services/auth.py                 # 기본: discovery + Evidence pass
-/prism src/services/auth.py --quick         # discovery만 (전부 SUSPECTED)
+/prism src/services/auth.py                 # 기본: discovery + Evidence pass + 아이디어 pass
+/prism src/services/auth.py --quick         # discovery만 (전부 SUSPECTED, 아이디어 pass 없음)
+/prism src/services/auth.py --no-ideas      # 결함만, IDEAS 절 없음
 /prism src/services/auth.py --adversarial   # Evidence pass가 자기 REJECT에 반박
 /prism src/services/auth.py --redteam       # + 공격자 렌즈, 체크리스트, 공격 체인
 /prism --diff main...HEAD                   # 변경 범위 리뷰 (PR에 권장)
@@ -155,6 +166,7 @@ discovery 후 모든 finding은 **후보**다 — 자동 확정은 없다:
 ```
 PRISM REPORT - src/auth.py - 2026-10-13 15:30
 Mode: default +reproduce · Lenses: defect · Checklist: none
+Ideas: on (claude)
 Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
 ## REPRODUCED (실패 시연됨)
@@ -174,6 +186,17 @@ Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
 ## Recommended Action Order
 1. PRISM-003 (reproduced) ...
+
+## IDEAS (alternatives, not defects; not in the action order)
+Engines: claude
+Ideas: 2 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
+- IDEA-1 [claude | class | cost S | KEEP: worth doing] 재설정 토큰 발급을 1회용 헬퍼 하나로
+  problem: ... · replaces: ...
+  proposal: ...
+  effect: ... · risk: ...
+  grounds: PRISM-003 (REPRODUCED)
+  check: ...
+- IDEA-2 [claude | route | cost M | WEAK: worth a look] ...
 ```
 
 ## 비용
@@ -181,11 +204,12 @@ Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 | 모드 | 비용 | 언제 |
 |---|---|---|
 | `--quick` | 1.0× | 이미 triage된 target |
-| 기본 | 1.3–1.5× | 일반 리뷰 |
+| 기본 | 1.3–1.6× | 일반 리뷰 |
 | `--redteam` | +0.25× | auth / 결제 / PII / 외부 입력 파서 |
 | `--reproduce` | 1.6–2.2× | merge 전 중요한 변경 |
+| 아이디어 pass (기본 켜짐) | 약 +30~60초 | 게이트·CI는 `--no-ideas`, `--quick`이면 꺼짐 |
 
-Evidence pass 비용은 ⌈후보/8⌉ 콜(파일 단위 청킹). 토큰이 가는 곳과 줄이는 법: target이 discovery 에이전트 수만큼 전송된다(PR은 `--diff`); prism은 forked context로 실행되므로 긴 세션 끝에서 부르면 그 세션이 한 번 복제된다(초반이나 새 세션에서 실행); 파싱·인용 검증은 스크립트라 모델 토큰 0.
+Evidence pass 비용은 ⌈후보/8⌉ 콜(파일 단위 청킹). 토큰이 가는 곳과 줄이는 법: target이 discovery 에이전트 수만큼 전송된다(PR은 `--diff`); 에이전트는 모두 자기 프롬프트만 받고 새로 시작한다(지금 세션은 넘어가지 않는다); 파싱·인용 검증은 스크립트라 모델 토큰 0.
 
 ---
 
@@ -263,7 +287,7 @@ codex --version   # >= 0.125.0
 ### Findings가 너무 많음 / 리포트가 시끄러움
 
 - `--quick`으로 Evidence pass 생략 (빠르지만 false positive 증가).
-- 기본 리포트는 이미 Improvement 렌즈를 제외한다 — `--include-improvements`를 붙였다면 빼기.
+- 아이디어는 finding과 따로 적히고 카운트에 안 들어간다 — IDEAS 절이 필요 없으면 `--no-ideas`.
 - 보안 전용이면 `--redteam`: 깊이는 늘고 소음은 아니다 — 그 finding도 증거 검증을 거친다.
 
 ---
@@ -271,10 +295,11 @@ codex --version   # >= 0.125.0
 ## Requirements
 
 - Claude Code (`/plugin` 명령 있는 버전) — general-purpose 서브에이전트 스폰
-- *(선택 — `/prism-codex`, `/prism-all`에만)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
+- PATH의 Node.js (결정론 스크립트 `parse-findings.js`·`verify-evidence.js`·`verify-ideas.js`)
+- *(선택 — `/prism-codex`, `/prism-all`, 그리고 없으면 Claude만으로 도는 `/prism-ideas`)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
 - Windows (Git Bash / WSL2), macOS, Linux 지원
 
-기본 `/prism`은 외부 CLI 없이 Claude Code 안에서 완결.
+기본 `/prism`은 Claude Code와 Node.js만으로 돈다(외부 AI CLI 불필요).
 
 ---
 
@@ -290,6 +315,7 @@ codex --version   # >= 0.125.0
 
 ## 업데이트 기록
 
+- **2026-10-19 (0.5.0)** — `/prism`·`/prism-all`·`/prism-codex`에 아이디어 pass(Pass 4): 근거 있는 대안(class / route / subtract)을 `verify-ideas.js`가 gate하고, 쓰지 않은 checker가 판정해, finding과 따로 `## IDEAS`에 적는다(`--no-ideas`로 생략). 새 `/prism-ideas`는 이 pass만 돌린다. Improvement 렌즈 은퇴(design 렌즈셋 = 4). 상세는 CHANGELOG.
 - **2026-10-14 (0.4.2)** — prism-all 리뷰로 `codex-run.sh` 보강: 인용·예시 값 오탐 격리 제거, 더 많은 secret 형식 탐지, 임시 출력을 실행 폴더 밖으로, angle당 동시 실행 1개, PowerShell에서도 `--strict` 동작.
 - **2026-10-14 (0.4.1)** — Codex를 read-only 샌드박스로 실행(읽기만, 쓰기·네트워크 차단). 샌드박스 없이 돌리려면 `PRISM_CODEX_SANDBOX=bypass`를 명시.
 - **2026-10-14 (0.4.0)** — Codex 호출 계약을 스크립트(`codex-run.sh`)로 옮김: 안전 문구·secret scrub·출력 계약·타임아웃·effort 고정을 모델 대신 코드가 지킨다. 런당 Codex 관련 지시문이 약 39 KB에서 2.7 KB로 줄었다.

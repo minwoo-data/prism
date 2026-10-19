@@ -7,14 +7,15 @@
 "Multiple AI reviewers agreed" is not evidence: all five prism agents run on the same model, and same-model agents can share the same misunderstanding. So in prism, **agreement decides what gets investigated first; evidence decides what survives.** Every candidate goes through an Evidence pass that pins `file:lines@symbol`, traces the execution path, and quotes the line that makes the claim true. With `--reproduce`, prism goes one step further and demonstrates the failure with a throwaway test.
 
 ```
-/prism <target>                        -> discovery (5 lenses) + Evidence pass
+/prism <target>                        -> discovery (5 lenses) + Evidence pass + idea pass
 /prism <target> --reproduce            -> + minimal failing tests in a temp dir (never your project)
 /prism --diff main...HEAD              -> review the CHANGE: what regression does this diff introduce?
 /prism <target> --quick                -> discovery only (everything reported as SUSPECTED)
 /prism <target> --adversarial          -> Evidence pass argues against its own REJECTs
 /prism <target> --redteam              -> + attacker-mindset Red Team lens (absorbed prism-devil)
-/prism <target> --include-improvements -> add the Improvement lens (labeled separately)
+/prism <target> --no-ideas             -> skip the idea pass (grounded alternatives)
 /prism <target> --format json          -> machine-readable prism-report.json (finding records v2)
+/prism-ideas <target>                  -> alternatives only, no review (Claude + Codex cross-checked)
 ```
 
 Every finding carries a status on the evidence ladder:
@@ -25,6 +26,9 @@ Every finding carries a status on the evidence ladder:
 | `SUPPORTED` | file + lines + execution path + quoted evidence |
 | `REPRODUCED` | a failing test was actually run |
 | `REJECTED` | contradicted — with the contradicting line quoted |
+
+After the Evidence pass, an **idea pass** asks "what should we do instead?" and lists grounded
+alternatives under their own `## IDEAS` heading: options for a person, never findings, never counted.
 
 ---
 
@@ -52,6 +56,7 @@ You ask Claude "review this file". It says "looks good". You ship it. Two weeks 
 |---|---|
 | Find defects broadly, evidence-graded | **prism** (this plugin) |
 | Cross-check with a second model (Claude + Codex) | `/prism-all` (ships in this plugin) |
+| Grounded alternatives instead of verdicts (before a PRD, after a review) | `/prism-ideas` (ships in this plugin) |
 | Security / attacker-mindset deep probe | `/prism <target> --redteam` (prism-devil was absorbed in 0.3.0) |
 | Actually fix a file, iteratively | [mangchi](https://github.com/minwoo-data/mangchi) |
 | Check a design doc is sound (conflicts, claims vs code, failure modes) | `/prism <doc>` (design lens set, automatic for markdown) |
@@ -79,7 +84,7 @@ You ask Claude "review this file". It says "looks good". You ship it. Two weeks 
 ### 3. Use
 
 ```
-/prism src/services/auth.py                 # discovery + Evidence pass
+/prism src/services/auth.py                 # discovery + Evidence pass + idea pass
 /prism src/services/auth.py --reproduce     # + failing-test reproduction (temp dir)
 /prism --diff main...HEAD                   # change-scoped: regressions this diff introduces
 /prism .                                    # whole-project review
@@ -91,15 +96,16 @@ Restart Claude Code after install/update.
 
 ## Variants shipped in this plugin
 
-Installing `prism` gives you three independent skills that share the 5-angle framework but differ in who runs each agent:
+Installing `prism` gives you three review skills that share the 5-angle framework but differ in who runs each agent, plus `/prism-ideas`, the idea pass on its own:
 
 | Skill | Engine | When to use |
 |---|---|---|
 | `/prism` | **Claude only** — 5 agents parallel + Evidence pass | Default. Fastest wall-time, no external CLI, only variant with `--diff`. |
 | `/prism-codex` | **Codex CLI only** — 5 calls + Codex Evidence pass, gpt-5.5 | Save Claude tokens, or get a different-model opinion. Requires `codex-cli >= 0.125.0`. |
 | `/prism-all` | **Claude + Codex in parallel** — 10 discovery + Evidence pass | Highest confidence. Same-angle cross-model agreement gets a dedicated Tier 1. `--verifier=claude\|codex\|both` picks the adjudicator. |
+| `/prism-ideas` | **Claude + Codex** (Claude-only without Codex) — propose, gate, cross-check, rank | Alternatives without a review; `--findings` reuses a run's `checked.json`. |
 
-All three ship inside one plugin install. Pick one per run. Codex CLI prerequisite details (including the "model does not exist" error which is actually a CLI version issue): see [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md) in the sibling triad plugin.
+All four ship inside one plugin install. Pick one per run. Codex CLI prerequisite details (including the "model does not exist" error which is actually a CLI version issue): see [triad/docs/codex-5.4-to-5.5.md](../triad/docs/codex-5.4-to-5.5.md) in the sibling triad plugin.
 
 ---
 
@@ -115,11 +121,11 @@ All three ship inside one plugin install. Pick one per run. Codex CLI prerequisi
 
 Optional lenses: **Red Team** (`--redteam`) — the hostile attacker-mindset probe inherited from
 `prism-devil`, with project security-checklist cross-reference and attack-chain detection; its
-findings go through the same Evidence pass. **Improvement** (`--include-improvements`) — kept out
-of the default so defect reports stay quiet. **Design docs, plans and specs** get the **design lens
+findings go through the same Evidence pass. **Design docs, plans and specs** get the **design lens
 set** instead (conflict & reuse / claim accuracy against the repo / devil's advocate / robustness of
-the designed system / improvement): prism answers "is the design sound?", triad answers "is the
-document well written?", and `/ddaro:review` runs both.
+the designed system): prism answers "is the design sound?", triad answers "is the document well
+written?", and `/ddaro:review` runs both. The Improvement lens is retired (0.5.0): alternatives come
+from the idea pass below, and `--include-improvements` is kept only as an alias that turns it on.
 
 Prompts are assembled **target first, lens last**, so the shared prefix is prompt-cache friendly.
 
@@ -143,6 +149,19 @@ Every finding ships as a structured **record v2** — `id`, stable `fingerprint`
 `file/lines/symbol`, `category`, `severity`, `status`, `claim`, `preconditions`, `execution_path`,
 `evidence`, `reproduction{status,suggested_test,command,result}`, `confidence`, plus `checklist_ref` and `chain` when a security checklist / Red Team lens is in play. Schema: `skills/prism/references/record-v2.md`.
 
+## The idea pass (Pass 4)
+
+Lenses ask "is this wrong?"; the idea pass asks "what should we do instead?". After the Evidence
+pass, a proposer reads the same target plus the machine-checked findings and offers at most 3
+alternatives per idea lens: **class** (fix the whole class of problem), **route** (a different
+approach), **subtract** (remove or reuse something). Every idea must cite a ground a script can
+check: a `SUPPORTED`/`REPRODUCED` finding ID, or a `file:lines — quote` that really sits at those
+lines. `verify-ideas.js` drops ungrounded ideas; nobody judges them by feel. A checker that did not
+write the idea (in `/prism-all`, the other engine) rules KEEP / WEAK / DROP, and a DROP needs a
+verified quote. The report lists ideas under `## IDEAS`, apart from findings: never counted, never
+in the action order, never a gate. `--no-ideas` or `--quick` turns the pass off; `/prism-ideas`
+runs it alone.
+
 ## Features
 
 - **Parallel discovery** — 5 lenses fire in a single tool call; wall-time ≈ the slowest one.
@@ -152,6 +171,7 @@ Every finding ships as a structured **record v2** — `id`, stable `fingerprint`
 - **Chunked Evidence pass** — ≤8 candidates per call, grouped by file so each file is read once per chunk; a failed chunk downgrades only its own candidates.
 - **Adversarial mode** — the Evidence pass argues against its own REJECTs before finalizing.
 - **Red Team lens** — `--redteam` adds a deliberately hostile 6th agent; findings are cross-referenced to your project's security checklist and composed into attack chains.
+- **Idea pass** — grounded alternatives after the review, cross-checked and kept apart from findings (`--no-ideas` to skip).
 - **Code never modified** — prism is a pure reviewer. Use `/mangchi` to actually change code.
 
 ---
@@ -159,8 +179,9 @@ Every finding ships as a structured **record v2** — `id`, stable `fingerprint`
 ## Modes and output
 
 ```
-/prism src/services/auth.py                 # default: discovery + Evidence pass
-/prism src/services/auth.py --quick         # discovery only (all SUSPECTED)
+/prism src/services/auth.py                 # default: discovery + Evidence pass + idea pass
+/prism src/services/auth.py --quick         # discovery only (all SUSPECTED, no idea pass)
+/prism src/services/auth.py --no-ideas      # defects only, no IDEAS section
 /prism src/services/auth.py --adversarial   # Evidence pass argues against its own REJECTs
 /prism src/services/auth.py --redteam       # + attacker-mindset lens, checklist, attack chains
 /prism --diff main...HEAD                   # change-scoped review (preferred for PRs)
@@ -175,6 +196,7 @@ Report shape:
 ```
 PRISM REPORT - src/auth.py - 2026-07-14 15:30
 Mode: default +reproduce · Lenses: defect · Checklist: none
+Ideas: on (claude)
 Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
 ## REPRODUCED (demonstrated failures)
@@ -194,6 +216,17 @@ Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
 ## Recommended Action Order
 1. PRISM-003 (reproduced) ...
+
+## IDEAS (alternatives, not defects; not in the action order)
+Engines: claude
+Ideas: 2 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
+- IDEA-1 [claude | class | cost S | KEEP: worth doing] Issue single-use reset tokens from one helper
+  problem: ... · replaces: ...
+  proposal: ...
+  effect: ... · risk: ...
+  grounds: PRISM-003 (REPRODUCED)
+  check: ...
+- IDEA-2 [claude | route | cost M | WEAK: worth a look] ...
 ```
 
 ## Cost
@@ -201,14 +234,14 @@ Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 | Mode | Cost | When |
 |---|---|---|
 | `--quick` | 1.0× | Already-triaged targets (everything SUSPECTED) |
-| default | 1.3–1.5× | Standard reviews |
+| default | 1.3–1.6× | Standard reviews |
 | `--redteam` | +0.25× | Auth / payments / PII / untrusted-input parsers |
 | `--reproduce` | 1.6–2.2× | Before merging anything that matters |
+| idea pass (on by default) | about +30–60 s | Off with `--no-ideas` (gates, CI) or `--quick` |
 
 Evidence-pass cost is ⌈candidates/8⌉ calls, chunked by file. Where tokens go and how to spend
-fewer: the target travels once per discovery agent (use `--diff` for PRs); prism runs in a forked
-context, so invoking it at the end of a long session copies that session once (run it early or in a
-fresh session); parsing and quote-checking are scripts, not model calls.
+fewer: the target travels once per discovery agent (use `--diff` for PRs); every agent starts fresh
+with only its prompt, never your session; parsing and quote-checking are scripts, not model calls.
 
 ---
 
@@ -287,7 +320,7 @@ Full writeup: sibling `triad/docs/codex-5.4-to-5.5.md` in this marketplace.
 ### Too many findings / report is noisy
 
 - Use `--quick` to skip the Evidence pass (faster, more false positives).
-- Default reports exclude the Improvement lens already; if you added `--include-improvements`, drop it.
+- Ideas are listed apart from findings and never counted; `--no-ideas` drops the IDEAS section.
 - For a security-only pass, `--redteam` adds depth, not noise: its findings are evidence-checked like the rest.
 
 ---
@@ -295,10 +328,11 @@ Full writeup: sibling `triad/docs/codex-5.4-to-5.5.md` in this marketplace.
 ## Requirements
 
 - Claude Code (any version with `/plugin` command) — spawns general-purpose subagents
-- *(Optional — only for `/prism-codex` and `/prism-all`)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
+- Node.js on PATH (the deterministic scripts: `parse-findings.js`, `verify-evidence.js`, `verify-ideas.js`)
+- *(Optional — for `/prism-codex`, `/prism-all`, and `/prism-ideas`, which runs Claude-only without it)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
 - Works on Windows (Git Bash / WSL2), macOS, Linux
 
-The base `/prism` runs entirely within Claude Code. No external CLI required.
+The base `/prism` runs within Claude Code plus Node.js. No external AI CLI required.
 
 ---
 
@@ -318,6 +352,11 @@ currency of confirmation. The most honest sentence in a review is often
 
 ## Updates
 
+- **2026-10-19 (v0.5.0)** — Idea pass (Pass 4) in `/prism`, `/prism-all` and `/prism-codex`: grounded
+  alternatives (class / route / subtract) gated by `verify-ideas.js`, judged by a checker that did
+  not write them, listed under `## IDEAS` apart from findings (`--no-ideas` to skip). New
+  `/prism-ideas` runs the pass alone. The Improvement lens is retired (design set = 4 lenses). See
+  CHANGELOG.
 - **2026-10-14 (v0.4.2)** — `codex-run.sh` hardening from a prism-all review: no false quarantines on quoted values or placeholder fixes, more secret forms caught, scratch outside the run dir, one attempt per angle, `--strict` works from PowerShell.
 - **2026-10-14 (v0.4.1)** — Codex runs in the read-only sandbox (reads only; no writes, no
   network). `PRISM_CODEX_SANDBOX=bypass` is an explicit per-run opt-out.
