@@ -7,9 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-prism-ideas, slices S1 to S3: the idea pass's contracts and deterministic gate (S1), the
+## [0.5.0] - 2026-10-19
+
+prism-ideas, slices S1 to S4: the idea pass's contracts and deterministic gate (S1), the
 standalone `/prism-ideas` skill (S2), then the idea pass inside prism, prism-all and prism-codex,
-which replaces the Improvement lens (S3).
+which replaces the Improvement lens (S3), then the docs and the release (S4).
 
 ### Added
 - **`verify-ideas.js`** (canonical in prism-all, synced to prism and prism-codex):
@@ -115,6 +117,11 @@ which replaces the Improvement lens (S3).
 - `verify-independence.js` treats a non-fatal Codex prerequisite as a warning in the flag check too
   (prism-ideas runs Claude-only without Codex).
 - `sync-review-parsers.sh` also generates `skills/prism-ideas` (36 copies).
+- `/prism` is served by the skill alone (S4): `commands/prism.md` is gone and `plugin.json` no
+  longer declares `commands`. Its "When to use which" table, the `.` target and the companion
+  list moved into `skills/prism/SKILL.md`.
+- README / README.ko: the idea pass, `/prism-ideas`, `--no-ideas`, the 4-lens design set; the
+  Improvement lens is described as retired (S4).
 
 ### Fixed
 - `sync-review-parsers.sh` reported "synced" even when a copy failed to land (a failed `mv` inside

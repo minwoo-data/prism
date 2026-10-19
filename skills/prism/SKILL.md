@@ -50,7 +50,7 @@ failure handling). Read a reference only when the step below says so.
 
 ## Target resolution
 
-- File path → review that file. Topic → locate and review relevant files. No argument → current
+- File path → review that file. Topic → locate and review relevant files. No argument or `.` → the current
   project. **Always read the full target first** and pass it verbatim to each agent. No summarization.
 - **Lens set by target type.** Code (majority of target bytes are source files, or in `--diff`
   mode any hunk touches a code file) → DEFECT set. Markdown/design/plan text → **DESIGN set**
@@ -392,9 +392,26 @@ by-file chunking above keeps each read to once per chunk; (d) parsing and quote-
 by scripts, never by the model; (e) the idea pass sends the target once more (one proposer), its
 checkers get only the ideas, and `--no-ideas` skips it.
 
+## When to use which
+
+| Situation | Mode |
+|---|---|
+| Standard review | default (discovery + Evidence pass + idea pass) |
+| Reviewing a diff/PR | `--diff [range]` |
+| Auth / payments / PII / parsers of untrusted input | `--redteam` |
+| Before merging a change | `--reproduce` (demonstrate the bug) |
+| You're rushing | `--quick` (everything SUSPECTED, no idea pass) |
+| Defects only (a gate, CI) | `--no-ideas` |
+| You suspect you'll dismiss real issues | `--adversarial` |
+| Cross-model confidence | `/prism-all` (Claude + Codex) |
+| Alternatives without a review | `/prism-ideas <target>` |
+| Is this design doc sound? | `/prism <doc>` (design lenses) |
+| Does this doc read well? | `/triad <doc>` |
+
 ## Companion skills
 
 - **prism-all** / **prism-codex** — ship in this plugin: Codex engine for cross-model agreement (same ladder, same records).
+- **prism-ideas** — ships in this plugin: the idea pass alone (`/prism-ideas <target>`), for alternatives without a review, or with `--findings` to reuse a run's `checked.json`.
 - **mangchi** — after prism identifies weak files, iteratively harden them (prism finds, mangchi fixes). Separate plugin.
 - **triad** — document *writing* quality (LLM clarity / longevity / comprehension) for markdown/specs/plans. On a design doc prism checks soundness and triad checks the writing; `/ddaro:review` runs both. Separate plugin.
 - **prism-devil** — retired; absorbed as `--redteam` (0.3.0).
