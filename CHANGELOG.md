@@ -7,6 +7,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Merge gate support for ddaro (S0a). Nothing changes for `/prism`, `/prism-all`,
+`/prism-codex` or `/prism-ideas` as they run today: the new behavior is only on when a new option
+is given.
+
+### Added
+- **`verify-evidence.js --rev <sha>`** (S0a; canonical in prism-all, synced to prism, prism-codex
+  and prism-ideas): the merge gate's mode. Quotes are checked against the committed tree
+  (`git cat-file blob <sha>:./<path>`, relative to the root, so a root below the top level stays
+  confined), never the working tree, so a report pins to the head it reviewed even when the tree
+  moves during the review. git's lookup is exact: a path in the wrong letter case is
+  `FILE_NOT_FOUND` here even where the default mode's filesystem read would succeed. A `file` that
+  leaves the repo root (`..`, another drive, an absolute path elsewhere) is not read and becomes
+  `PATH_OUTSIDE_ROOT`; an absolute path under the root is read as repo-relative and a leading slash
+  is tried as repo-rooted first. A directory is `FILE_NOT_FOUND`; a symlink, a submodule or an LFS
+  pointer is `UNREADABLE_AT_REV` (not a bad citation: no code change can make it verify).
+  `REJECTED` records that carry evidence get their quotes checked too, with the result only in
+  `_evidence_check` (`status`, `missing` and `confidence` are untouched; a null file is annotated
+  `FILE_NULL`), so a "fixed" claim can be verified against the fixing commit without becoming a
+  ground. New `_evidence_check.quote_lines`: the line numbers the quotes actually sit on (every
+  quote of at least 8 loose characters; sorted, unique, computed from per-line offsets so a
+  multi-megabyte line costs nothing extra); `matched_lines` keeps its meaning. git runs with the
+  `GIT_DIR` / `GIT_WORK_TREE` family removed from the environment and a 60 s timeout; one read per
+  blob per run; 40- and 64-hex commit ids. A git that cannot answer (missing, timed out, repository
+  gone) is never a verdict on a record: the CLI exits 1 with git's reason (`runAt` throws
+  `GitUnavailable`). An unreadable input, invalid JSON, a non-array, an unknown rev, a missing
+  root or a stray option exits 1 with nothing on stdout; `--rev=<sha>` is accepted.
+- Without `--rev` the output is byte-for-byte what 0.5.0 printed: the selftest freezes 0.5.0's
+  output for a fixed record set and compares (72 cases, 63 new; a missing git fails the selftest
+  instead of skipping). The default mode now refuses a third argument or a `--` option (exit 1)
+  so a misspelled `--rev` can never silently read the working tree.
+- `verify-ideas.js --selftest` asserts its `MIN_QUOTE` equals `verify-evidence.js`'s exported
+  `MIN_QUOTE_LINES`.
+
 ## [0.5.0] - 2026-10-19
 
 prism-ideas, slices S1 to S4: the idea pass's contracts and deterministic gate (S1), the

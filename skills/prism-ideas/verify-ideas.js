@@ -1171,6 +1171,7 @@ function selftest() {
     // Each fence must map to its contract file in the reference's table (one line: fence -> file).
     const maps = (fenceTok, file) => !!ref && ref.split(LINE).some((l) => l.indexOf('`' + fenceTok + '`') !== -1 && l.indexOf('`' + file + '`') !== -1);
     t('[11] references/ideas.md maps each fence to its contract file', maps(IDEAS_BEGIN, 'templates/ideas-contract.md') && maps(CHECK_BEGIN, 'templates/idea-check-contract.md') && ref.indexOf('verify-ideas.js') !== -1);
+    t('[11] MIN_QUOTE equals verify-evidence.js MIN_QUOTE_LINES (quote_lines uses the same floor)', VE.MIN_QUOTE_LINES === MIN_QUOTE);
     // Same credential globs as codex-run.sh, wherever it ships next to this file (prism-all, prism-codex).
     const cr = read('codex-run.sh');
     if (cr !== null) {

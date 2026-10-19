@@ -28,10 +28,38 @@
  *   REPRODUCED is only trusted when reproduction.status === 'REPRODUCED' AND the
  *     static quote also verifies; otherwise it falls back to the SUPPORTED rules.
  *
- * Never throws, never mutates source files, no deps. Windows/POSIX safe.
+ * --rev <sha> (the merge gate's mode; everything below is OFF without it, and the default
+ * mode's output is byte-for-byte what it was before --rev existed):
+ *   - files are read from the commit (`git cat-file blob <sha>:./<path>`, relative to the
+ *     <repo-root> directory), never from the working tree, so a report pins to the head it
+ *     reviewed even when the tree moves during the review. git's tree lookup is exact: a path
+ *     whose letter case differs from the committed one is FILE_NOT_FOUND here even where the
+ *     default mode's case-insensitive filesystem read would succeed.
+ *   - `file` must stay inside <repo-root>: an absolute path under the root is made relative, a
+ *     leading slash is tried as repo-rooted first; a path that leaves the root (`..`, another
+ *     drive, an absolute path elsewhere) is not read and becomes PATH_OUTSIDE_ROOT (the default
+ *     mode keeps its second-chance absolute read, which cross-repository design reviews rely on).
+ *     A directory is FILE_NOT_FOUND; a symlink, a submodule or an LFS pointer is
+ *     UNREADABLE_AT_REV (the committed object is not the file's text, so no code change can make
+ *     the record verify: route it to a person).
+ *   - REJECTED records that carry evidence get their quotes checked too. The result lands only
+ *     in `_evidence_check` (status, missing and confidence are untouched), so a "fixed" claim
+ *     can be verified against the fixing commit without ever becoming a ground.
+ *   - `_evidence_check.quote_lines`: the line numbers the quotes actually sit on (every quote of
+ *     at least 8 loose characters, the idea gate's minimum; sorted, unique). `matched_lines`
+ *     keeps its old meaning (the cited window, `from-to`) on the branches that had it.
+ *   - git runs with the GIT_DIR / GIT_WORK_TREE family removed from the environment and a
+ *     60 s timeout. A git that cannot answer (missing, timed out, repository gone, blob past
+ *     256 MB) is never a verdict on a record: `runAt` throws GitUnavailable and the CLI exits 1.
+ *   - an unreadable input, invalid JSON, a non-array, an unknown rev, a missing root or a
+ *     stray option prints nothing and exits 1 (the default mode prints `[]` for an unreadable
+ *     input and exits 0, as before; it now refuses extra arguments).
+ *
+ * The default mode never throws, never mutates source files, no deps. Windows/POSIX safe.
  *
  * Usage:
- *   node verify-evidence.js findings.json <repo-root> > checked.json
+ *   node verify-evidence.js <records.json> <repo-root> > checked.json
+ *   node verify-evidence.js <records.json> <repo-root> --rev <sha> > checked.json
  *   node verify-evidence.js --selftest
  *
  * SINGLE-SOURCED: canonical = prism-all/verify-evidence.js; prism-codex + prism
@@ -41,10 +69,12 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 const GROUNDED = new Set(['SUPPORTED', 'REPRODUCED']);
 const CTX = 2;                 // allow the quote to sit within +/-CTX of the cited lines
 const NL = /\r\n|\n|\r/;
+const MIN_QUOTE_LINES = 8;     // loose characters a quote needs to contribute to quote_lines (= verify-ideas MIN_QUOTE)
 
 // Normalize a path for hashing: repo-relative, forward slashes, no leading ./,
 // lowercased ONLY on Windows-style drive-letter inputs (case-insensitive FS).
@@ -187,13 +217,206 @@ function run(records, repoRoot) {
   return arr.map((r) => checkOne(r || {}, repoRoot));
 }
 
+// ---------------------------------------------------------------- --rev mode
+
+// A git failure that is not "this path is not in that commit": a missing git, a stuck or killed
+// child, a repository that vanished, a blob past maxBuffer. It is never a verdict on the record;
+// runAt throws it and the CLI exits 1 with the reason, so a gate retries instead of recording
+// SUSPECTED for a healthy file.
+class GitUnavailable extends Error {}
+
+// git reads the repository named by -C, never one a surrounding hook or shell exported.
+const GIT_ENV_OVERRIDES = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'];
+function gitEnv() {
+  const env = Object.assign({}, process.env);
+  for (const k of GIT_ENV_OVERRIDES) delete env[k];
+  return env;
+}
+const GIT_TIMEOUT_MS = 60000;
+// Runs git; returns {out} or {status, err} for a non-zero exit; throws GitUnavailable for a child
+// that did not run to completion (spawn error, timeout, signal, output past maxBuffer).
+function gitRun(repoRoot, args) {
+  try {
+    return { out: execFileSync('git', ['-C', repoRoot].concat(args), { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: GIT_TIMEOUT_MS, env: gitEnv() }) };
+  } catch (e) {
+    if (e && typeof e.status === 'number' && !e.signal && e.code !== 'ENOBUFS') return { status: e.status, err: String(e.stderr || '').trim() };
+    throw new GitUnavailable(`git ${args[0]} did not complete in ${repoRoot}: ${e && (e.code || e.signal || e.message)}`);
+  }
+}
+
+// `file` as git names it under the root (forward slashes), or null when it leaves the root. A
+// repo-rooted path with a leading slash is tried under the root first (as the default mode's
+// path.join does); a drive or UNC path is taken as is.
+function repoRelative(file, repoRoot) {
+  const root = path.resolve(String(repoRoot));
+  const f = String(file).replace(/\\/g, '/');
+  const inside = (abs) => {
+    const rel = path.relative(root, abs);
+    if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return null;
+    return rel.split(path.sep).join('/');
+  };
+  if (/^[a-zA-Z]:\//.test(f) || f.startsWith('//')) return inside(path.resolve(f));
+  return inside(path.resolve(path.join(root, f))) || (f.startsWith('/') ? inside(path.resolve(f)) : null);
+}
+
+const LFS_POINTER = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\r?$/m;
+// The blob at <sha>:<rel>, read relative to the -C directory (`./`, so a root below the top level
+// stays confined). {text} for a regular file; {code} FILE_NOT_FOUND for a missing path or a tree,
+// UNREADABLE_AT_REV for a symlink, a submodule or an LFS pointer (the committed object is not the
+// file's text, and no code change can make it verify).
+function gitBlob(repoRoot, sha, rel) {
+  const ls = gitRun(repoRoot, ['ls-tree', sha, '--', `./${rel}`]);
+  if (ls.status) return { code: 'FILE_NOT_FOUND' };
+  const m = /^(\d{6}) (\w+) /.exec(ls.out);
+  if (!m) return { code: 'FILE_NOT_FOUND' };
+  if (m[2] === 'tree') return { code: 'FILE_NOT_FOUND' };
+  if (m[2] !== 'blob' || m[1] === '120000') return { code: 'UNREADABLE_AT_REV' };
+  const cat = gitRun(repoRoot, ['cat-file', 'blob', `${sha}:./${rel}`]);
+  if (cat.status) return { code: 'FILE_NOT_FOUND' };
+  if (LFS_POINTER.test(cat.out.slice(0, 200))) return { code: 'UNREADABLE_AT_REV' };
+  return { text: cat.out };
+}
+
+// Where each window line starts in quoteWindow()'s text: that text is the lines joined by a space
+// and collapsed by loose(), which equals the lines' own loose() forms joined by one space with the
+// empty ones dropped (the selftest asserts the two agree). One offset per line, nothing per
+// character.
+function lineStarts(srcLines, from, to) {
+  const starts = [];
+  let len = 0;
+  for (let i = from; i <= to; i++) {
+    const seg = loose(srcLines[i - 1]);
+    if (!seg) continue;
+    if (len) len += 1;
+    starts.push({ line: i, at: len });
+    len += seg.length;
+  }
+  return starts;
+}
+function lineAt(starts, offset) {
+  let lo = 0, hi = starts.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid].at <= offset) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+function quoteLines(srcLines, from, to, windowText, quotes) {
+  const starts = lineStarts(srcLines, from, to);
+  const hit = new Set();
+  if (!starts.length) return [];
+  for (const q of quotes) {
+    const lq = loose(q);
+    if (lq.length < MIN_QUOTE_LINES) continue;
+    let at = windowText.indexOf(lq);
+    while (at !== -1) {
+      const a = lineAt(starts, at), b = lineAt(starts, at + lq.length - 1);
+      for (let k = a; k <= b; k++) hit.add(starts[k].line);
+      at = windowText.indexOf(lq, at + 1);
+    }
+  }
+  return [...hit].sort((a, b) => a - b);
+}
+
+// One record against the committed tree. Grounded records follow checkOne's downgrade contract;
+// REJECTED records are only annotated. `memo` holds one read per (sha, path) for the run.
+function checkOneAt(rec, repoRoot, sha, memo) {
+  const out = Object.assign({}, rec);
+  out.confidence = Object.assign({}, rec.confidence);
+  const fp = computeFingerprint(rec, repoRoot);
+  out.fingerprint = fp.fingerprint;
+  if (fp.unpinned) out.unpinned = true;
+
+  const grounded = GROUNDED.has(rec.status);
+  const rejected = rec.status === 'REJECTED';
+  const evList = Array.isArray(rec.evidence) ? rec.evidence : (rec.evidence ? [rec.evidence] : []);
+  if (!grounded && !rejected) {
+    out._evidence_check = { checked: false, note: 'status not grounded — no quote check' };
+    return out;
+  }
+  if (rejected && evList.length === 0) {
+    out._evidence_check = { checked: false, note: 'REJECTED without evidence — no quote check' };
+    return out;
+  }
+
+  const fail = (code) => {
+    if (grounded) {
+      out.status = 'SUSPECTED';
+      out.missing = code;
+      out.confidence.evidence_strength = 'NONE';
+      out.confidence.label = 'LOW';
+    }
+    out._evidence_check = { checked: true, quote_found: false, quote_lines: [], note: code };
+    return out;
+  };
+
+  if (!rec.file) return fail(grounded ? 'FILE_NULL_ON_GROUNDED' : 'FILE_NULL');
+  const rel = repoRelative(rec.file, repoRoot);
+  if (!rel) return fail('PATH_OUTSIDE_ROOT');
+  const key = `${sha}:${rel}`;
+  if (!memo.has(key)) memo.set(key, gitBlob(repoRoot, sha, rel));
+  const blob = memo.get(key);
+  if (blob.code) return fail(blob.code);
+  const srcLines = blob.text.split(NL);
+  const range = parseLines(rec.lines);
+  if (!range) return fail('LINES_UNPARSEABLE');
+  if (range[0] < 1 || range[1] > srcLines.length) return fail('LINES_OUT_OF_RANGE');
+
+  const { from, to, text: windowText } = quoteWindow(srcLines, range);
+  if (evList.length === 0) return fail('EVIDENCE_EMPTY');
+  const quotes = evList.map(quoteFromEvidence).filter((q) => q.length >= 3);
+  const anyFound = quotes.some((q) => quoteInWindow(windowText, q));
+  if (!anyFound) return fail('EVIDENCE_QUOTE_MISMATCH');
+
+  const lines = quoteLines(srcLines, from, to, windowText, quotes);
+  const repro = rec.reproduction && rec.reproduction.status;
+  if (rec.status === 'REPRODUCED' && repro !== 'REPRODUCED') {
+    out.status = 'SUPPORTED';
+    out.confidence.evidence_strength = 'MEDIUM';
+    out._evidence_check = { checked: true, quote_found: true, quote_lines: lines, note: 'quote OK but reproduction.status != REPRODUCED -> SUPPORTED' };
+    return out;
+  }
+  out._evidence_check = { checked: true, quote_found: true, matched_lines: `${from}-${to}`, quote_lines: lines, note: 'verified' };
+  return out;
+}
+
+// Resolve <rev> to a commit sha (40 or 64 hex) in <repo-root>; null when it is not one. Throws
+// GitUnavailable when git could not answer at all (missing git, not a repository, timeout).
+function resolveRev(repoRoot, rev) {
+  const r = String(rev == null ? '' : rev);
+  if (!r || r.startsWith('-')) return null;
+  const res = gitRun(repoRoot, ['rev-parse', '--verify', '--quiet', `${r}^{commit}`]);
+  if (res.status === 1 && !res.err) return null;             // --quiet: exit 1, nothing said = not a commit
+  if (res.status) throw new GitUnavailable(`git rev-parse failed in ${repoRoot}: ${res.err || `exit ${res.status}`}`);
+  const sha = res.out.trim();
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha) ? sha : null;
+}
+
+// Throws GitUnavailable (and nothing else) when git itself fails during the run.
+function runAt(records, repoRoot, sha) {
+  const memo = new Map();
+  return records.map((r) => checkOneAt(r || {}, repoRoot, sha, memo));
+}
+
+// ---------------------------------------------------------------- selftest
+
+// The default mode's output for FROZEN_RECORDS against the selftest's auth.py, printed by the
+// 0.5.0 script (prism main 05b837c) before --rev existed. The default mode must keep producing
+// exactly these bytes.
+const FROZEN_RECORDS = [
+  { id: 'PRISM-001', candidate_id: 'c1', file: 'auth.py', lines: '3-4', symbol: 'reset_password', category: 'security', claim: 'Reset token can be reused', status: 'SUPPORTED', evidence: ['auth.py:4 — token record remains active after successful update'], confidence: { model_agreement: '2/5', evidence_strength: 'MEDIUM', label: 'HIGH' }, reproduction: { status: 'NOT_RUN' } },
+  { id: 'PRISM-002', candidate_id: 'c2', file: 'auth.py', lines: '3-4', symbol: 'reset_password', category: 'security', claim: 'Token is wiped too early', status: 'SUPPORTED', evidence: ['auth.py:4 — token is wiped and blacklisted immediately'], confidence: { model_agreement: '1/5', evidence_strength: 'MEDIUM', label: 'HIGH' }, reproduction: { status: 'NOT_RUN' } },
+  { id: 'PRISM-003', candidate_id: 'c3', file: 'auth.py', lines: '2', symbol: 'reset_password', category: 'correctness', claim: 'lookup can return None', status: 'REJECTED', evidence: ['auth.py:2 — tok = lookup()'], confidence: { model_agreement: '1/5', evidence_strength: 'NONE', label: 'LOW' }, reproduction: { status: 'NOT_RUN' } },
+  { id: 'PRISM-004', candidate_id: 'c4', file: null, lines: null, symbol: null, category: 'state', claim: 'maybe a race', status: 'SUSPECTED', missing: 'REQUIRES_DOMAIN_CONFIRMATION: is reset concurrent?', evidence: [], confidence: { model_agreement: '1/5', evidence_strength: 'NONE', label: 'LOW' }, reproduction: { status: 'NOT_RUN' } },
+  { id: 'PRISM-005', candidate_id: 'c5', file: 'auth.py', lines: '5', symbol: 'reset_password', category: 'testability', claim: 'return value is never checked', status: 'REPRODUCED', evidence: ['auth.py:5 — return ok'], confidence: { model_agreement: '1/5', evidence_strength: 'STRONG', label: 'VERY-HIGH' }, reproduction: { status: 'NOT_RUN' } },
+];
+const FROZEN_EXPECTED = "[\n  {\n    \"id\": \"PRISM-001\",\n    \"candidate_id\": \"c1\",\n    \"file\": \"auth.py\",\n    \"lines\": \"3-4\",\n    \"symbol\": \"reset_password\",\n    \"category\": \"security\",\n    \"claim\": \"Reset token can be reused\",\n    \"status\": \"SUPPORTED\",\n    \"evidence\": [\n      \"auth.py:4 — token record remains active after successful update\"\n    ],\n    \"confidence\": {\n      \"model_agreement\": \"2/5\",\n      \"evidence_strength\": \"MEDIUM\",\n      \"label\": \"HIGH\"\n    },\n    \"reproduction\": {\n      \"status\": \"NOT_RUN\"\n    },\n    \"fingerprint\": \"6d1bcee1cb27\",\n    \"_evidence_check\": {\n      \"checked\": true,\n      \"quote_found\": true,\n      \"matched_lines\": \"1-5\",\n      \"note\": \"verified\"\n    }\n  },\n  {\n    \"id\": \"PRISM-002\",\n    \"candidate_id\": \"c2\",\n    \"file\": \"auth.py\",\n    \"lines\": \"3-4\",\n    \"symbol\": \"reset_password\",\n    \"category\": \"security\",\n    \"claim\": \"Token is wiped too early\",\n    \"status\": \"SUSPECTED\",\n    \"evidence\": [\n      \"auth.py:4 — token is wiped and blacklisted immediately\"\n    ],\n    \"confidence\": {\n      \"model_agreement\": \"1/5\",\n      \"evidence_strength\": \"NONE\",\n      \"label\": \"LOW\"\n    },\n    \"reproduction\": {\n      \"status\": \"NOT_RUN\"\n    },\n    \"fingerprint\": \"477411511595\",\n    \"missing\": \"EVIDENCE_QUOTE_MISMATCH\",\n    \"_evidence_check\": {\n      \"checked\": true,\n      \"quote_found\": false,\n      \"note\": \"EVIDENCE_QUOTE_MISMATCH\"\n    }\n  },\n  {\n    \"id\": \"PRISM-003\",\n    \"candidate_id\": \"c3\",\n    \"file\": \"auth.py\",\n    \"lines\": \"2\",\n    \"symbol\": \"reset_password\",\n    \"category\": \"correctness\",\n    \"claim\": \"lookup can return None\",\n    \"status\": \"REJECTED\",\n    \"evidence\": [\n      \"auth.py:2 — tok = lookup()\"\n    ],\n    \"confidence\": {\n      \"model_agreement\": \"1/5\",\n      \"evidence_strength\": \"NONE\",\n      \"label\": \"LOW\"\n    },\n    \"reproduction\": {\n      \"status\": \"NOT_RUN\"\n    },\n    \"fingerprint\": \"ec1988750547\",\n    \"_evidence_check\": {\n      \"checked\": false,\n      \"note\": \"status not grounded — no quote check\"\n    }\n  },\n  {\n    \"id\": \"PRISM-004\",\n    \"candidate_id\": \"c4\",\n    \"file\": null,\n    \"lines\": null,\n    \"symbol\": null,\n    \"category\": \"state\",\n    \"claim\": \"maybe a race\",\n    \"status\": \"SUSPECTED\",\n    \"missing\": \"REQUIRES_DOMAIN_CONFIRMATION: is reset concurrent?\",\n    \"evidence\": [],\n    \"confidence\": {\n      \"model_agreement\": \"1/5\",\n      \"evidence_strength\": \"NONE\",\n      \"label\": \"LOW\"\n    },\n    \"reproduction\": {\n      \"status\": \"NOT_RUN\"\n    },\n    \"fingerprint\": \"8606f2014a4b\",\n    \"unpinned\": true,\n    \"_evidence_check\": {\n      \"checked\": false,\n      \"note\": \"status not grounded — no quote check\"\n    }\n  },\n  {\n    \"id\": \"PRISM-005\",\n    \"candidate_id\": \"c5\",\n    \"file\": \"auth.py\",\n    \"lines\": \"5\",\n    \"symbol\": \"reset_password\",\n    \"category\": \"testability\",\n    \"claim\": \"return value is never checked\",\n    \"status\": \"SUPPORTED\",\n    \"evidence\": [\n      \"auth.py:5 — return ok\"\n    ],\n    \"confidence\": {\n      \"model_agreement\": \"1/5\",\n      \"evidence_strength\": \"MEDIUM\",\n      \"label\": \"VERY-HIGH\"\n    },\n    \"reproduction\": {\n      \"status\": \"NOT_RUN\"\n    },\n    \"fingerprint\": \"8c2a5437766c\",\n    \"_evidence_check\": {\n      \"checked\": true,\n      \"quote_found\": true,\n      \"note\": \"quote OK but reproduction.status != REPRODUCED -> SUPPORTED\"\n    }\n  }\n]";
+
 function selftest() {
   let n = 0, fails = 0;
   const t = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); fails++; } else console.log('ok  :', name); };
   const os = require('os');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-ve-'));
   const f = path.join(tmp, 'auth.py');
-  fs.writeFileSync(f, ['def reset_password():', '    tok = lookup()', '    update(tok)', '    # token record remains active after successful update', '    return ok'].join('\n'));
+  const AUTH = ['def reset_password():', '    tok = lookup()', '    update(tok)', '    # token record remains active after successful update', '    return ok'];
+  fs.writeFileSync(f, AUTH.join('\n'));
 
   const base = { file: 'auth.py', lines: '3-4', symbol: 'reset_password', category: 'security', claim: 'Reset token can be reused', confidence: {}, reproduction: { status: 'NOT_RUN' } };
 
@@ -227,18 +450,249 @@ function selftest() {
   try { run(undefined); run(null); run([null, 42]); } catch (_) { threw = true; }
   t('never throws on junk', !threw);
 
-  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+  // ---- default mode is frozen (S0a): the bytes 0.5.0 printed, REJECTED untouched, no quote_lines
+  const frozen = JSON.stringify(run(FROZEN_RECORDS, tmp), null, 2);
+  t('[frozen] default-mode output is byte-identical to 0.5.0', frozen === FROZEN_EXPECTED);
+  t('[frozen] default mode never emits quote_lines', frozen.indexOf('quote_lines') === -1);
+  const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'prism-ve-out-')), 'other.py');
+  fs.writeFileSync(outside, ['x = 1', 'secret_token_reuse = True', 'y = 2'].join('\n'));
+  r = run([Object.assign({}, base, { file: outside, lines: '2', status: 'SUPPORTED', evidence: [`${outside}:2 — secret_token_reuse = True`] })], tmp);
+  t('[frozen] default mode still reads an absolute path outside the root', r[0].status === 'SUPPORTED' && r[0]._evidence_check.quote_found === true);
+
+  // ---- --rev mode: a repo whose committed auth.py differs from the working tree. git is a
+  // requirement of this mode, so a git that cannot build the fixture FAILS the selftest; the
+  // fixture commits ignore the user's signing and hook settings and any exported GIT_DIR.
+  const sh = (args) => execFileSync('git', ['-C', tmp, '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=', '-c', 'init.templateDir='].concat(args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: gitEnv() }).trim();
+  let gitOk = true;
+  try {
+    sh(['init', '-q']);
+    sh(['config', 'user.email', 'prism@example.invalid']); sh(['config', 'user.name', 'prism selftest']);
+    sh(['config', 'core.autocrlf', 'false']);
+    fs.mkdirSync(path.join(tmp, 'src'));
+    fs.writeFileSync(path.join(tmp, 'src', 'Util.js'), ['function a() {', '  return 1;', '}', 'module.exports = { a };'].join('\n'));
+    sh(['add', '-A']); sh(['commit', '-q', '-m', 'one']);
+  } catch (e) { gitOk = false; console.error('git could not build the fixture repo:', e && e.message); }
+  t('[rev] git is available (the --rev cases need it; this is a failure, not a skip)', gitOk);
+  try { if (gitOk) {
+    const sha1 = sh(['rev-parse', 'HEAD']);
+    // commit 2 fixes the defect: line 4 now invalidates the token
+    const FIXED = AUTH.slice(); FIXED[3] = '    token_store.invalidate(tok)  # token record is invalidated after update';
+    fs.writeFileSync(f, FIXED.join('\n'));
+    sh(['add', '-A']); sh(['commit', '-q', '-m', 'two']);
+    const sha2 = sh(['rev-parse', 'HEAD']);
+    // the working tree moves on: the old quote is back, uncommitted
+    fs.writeFileSync(f, AUTH.join('\n'));
+
+    const sup = Object.assign({}, base, { status: 'SUPPORTED', evidence: ['auth.py:4 — token record remains active after successful update'] });
+    r = runAt([sup], tmp, sha1);
+    t('[rev] quote present at sha1 -> SUPPORTED with quote_lines', r[0].status === 'SUPPORTED' && JSON.stringify(r[0]._evidence_check.quote_lines) === '[4]' && r[0]._evidence_check.matched_lines === '1-5');
+    r = runAt([sup], tmp, sha2);
+    t('[rev] reads the commit, not the working tree (quote gone at sha2 -> SUSPECTED)', r[0].status === 'SUSPECTED' && r[0].missing === 'EVIDENCE_QUOTE_MISMATCH' && JSON.stringify(r[0]._evidence_check.quote_lines) === '[]');
+    t('[rev] default mode still reads the working tree', run([sup], tmp)[0].status === 'SUPPORTED');
+
+    const rej = Object.assign({}, base, { status: 'REJECTED', lines: '4', confidence: { evidence_strength: 'NONE', label: 'LOW' }, evidence: ['auth.py:4 — token record is invalidated after update'] });
+    r = runAt([rej], tmp, sha2);
+    t('[rev] REJECTED quote at the fixing commit -> annotated only', r[0].status === 'REJECTED' && r[0].missing === undefined && r[0].confidence.label === 'LOW' && r[0]._evidence_check.checked === true && r[0]._evidence_check.quote_found === true && JSON.stringify(r[0]._evidence_check.quote_lines) === '[4]');
+    r = runAt([rej], tmp, sha1);
+    t('[rev] REJECTED quote absent -> still REJECTED, quote_found false', r[0].status === 'REJECTED' && r[0].missing === undefined && r[0]._evidence_check.quote_found === false && r[0]._evidence_check.note === 'EVIDENCE_QUOTE_MISMATCH');
+    r = runAt([Object.assign({}, rej, { evidence: [] })], tmp, sha2);
+    t('[rev] REJECTED without evidence -> not checked', r[0]._evidence_check.checked === false);
+    r = runAt([Object.assign({}, rej, { file: null })], tmp, sha2);
+    t('[rev] REJECTED with file null -> annotated FILE_NULL, status kept', r[0].status === 'REJECTED' && r[0]._evidence_check.note === 'FILE_NULL' && r[0].missing === undefined);
+    r = runAt([Object.assign({}, sup, { file: null })], tmp, sha2);
+    t('[rev] grounded with file null -> FILE_NULL_ON_GROUNDED', r[0].status === 'SUSPECTED' && r[0].missing === 'FILE_NULL_ON_GROUNDED');
+    t('[rev] GROUNDED set unchanged', GROUNDED.size === 2 && GROUNDED.has('SUPPORTED') && GROUNDED.has('REPRODUCED') && !GROUNDED.has('REJECTED'));
+
+    r = runAt([Object.assign({}, sup, { file: path.join(tmp, 'auth.py') })], tmp, sha1);
+    t('[rev] absolute path inside the root is read as repo-relative', r[0].status === 'SUPPORTED' && r[0].file === path.join(tmp, 'auth.py'));
+    r = runAt([Object.assign({}, sup, { file: path.join(tmp, 'src', '..', 'auth.py') })], tmp, sha1);
+    t('[rev] a path that resolves back inside the root is fine', r[0].status === 'SUPPORTED');
+    r = runAt([Object.assign({}, sup, { file: outside, evidence: [`${outside}:2 — secret_token_reuse = True`], lines: '2' })], tmp, sha1);
+    t('[rev] absolute path outside the root -> PATH_OUTSIDE_ROOT, not read', r[0].status === 'SUSPECTED' && r[0].missing === 'PATH_OUTSIDE_ROOT' && r[0]._evidence_check.quote_found === false);
+    r = runAt([Object.assign({}, sup, { file: '../' + path.basename(path.dirname(outside)) + '/other.py', lines: '2', evidence: ['other.py:2 — secret_token_reuse = True'] })], tmp, sha1);
+    t('[rev] ../ escape -> PATH_OUTSIDE_ROOT', r[0].missing === 'PATH_OUTSIDE_ROOT');
+    r = runAt([Object.assign({}, rej, { file: outside })], tmp, sha1);
+    t('[rev] REJECTED outside the root -> annotated PATH_OUTSIDE_ROOT, status kept', r[0].status === 'REJECTED' && r[0]._evidence_check.note === 'PATH_OUTSIDE_ROOT');
+    r = runAt([Object.assign({}, sup, { file: 'src/Util.js', lines: '1-2', evidence: ['src/Util.js:1 — function a() { return 1;'] })], tmp, sha1);
+    t('[rev] subdirectory file, quote across two lines -> quote_lines [1,2]', r[0].status === 'SUPPORTED' && JSON.stringify(r[0]._evidence_check.quote_lines) === '[1,2]');
+    r = runAt([Object.assign({}, sup, { file: 'src\\Util.js', lines: '2', evidence: ['src/Util.js:2 — urn 1;'] })], tmp, sha1);
+    t('[rev] backslash path and a short (<8) quote: found, but quote_lines stays empty', r[0].status === 'SUPPORTED' && JSON.stringify(r[0]._evidence_check.quote_lines) === '[]');
+    r = runAt([Object.assign({}, sup, { file: 'src/Util.js', lines: '2', evidence: ['src/Util.js:2 — return 1;', 'src/Util.js:4 — module.exports = { a };'] })], tmp, sha1);
+    t('[rev] quote_lines is the union over every matching quote', JSON.stringify(r[0]._evidence_check.quote_lines) === '[2,4]');
+    r = runAt([Object.assign({}, sup, { file: 'src/Util.js', lines: '2', evidence: ['src/Util.js:2 — RETURN   1;   }'] })], tmp, sha1);
+    t('[rev] loose matching (case, whitespace) maps to lines [2,3]', r[0].status === 'SUPPORTED' && JSON.stringify(r[0]._evidence_check.quote_lines) === '[2,3]');
+    r = runAt([Object.assign({}, sup, { status: 'REPRODUCED', reproduction: { status: 'NOT_RUN' } })], tmp, sha1);
+    t('[rev] REPRODUCED w/o repro -> SUPPORTED, quote_lines kept', r[0].status === 'SUPPORTED' && JSON.stringify(r[0]._evidence_check.quote_lines) === '[4]');
+    const keysDefault = Object.keys(run([Object.assign({}, sup, { status: 'REPRODUCED', reproduction: { status: 'NOT_RUN' } })], tmp)[0]._evidence_check).concat('quote_lines').sort().join();
+    t('[rev] REPRODUCED w/o repro: the default mode\'s keys plus quote_lines, nothing else', Object.keys(r[0]._evidence_check).sort().join() === keysDefault);
+    r = runAt([Object.assign({}, sup, { file: '/src/Util.js', lines: '1-2', evidence: ['src/Util.js:1 — function a() { return 1;'] })], tmp, sha1);
+    t('[rev] a leading-slash repo path is tried under the root first (as the default mode does)', r[0].status === 'SUPPORTED' && run([Object.assign({}, sup, { file: '/src/Util.js', lines: '1-2', evidence: ['src/Util.js:1 — function a() { return 1;'] })], tmp)[0].status === 'SUPPORTED');
+    r = runAt([Object.assign({}, sup, { file: 'src', lines: '1', evidence: ['src:1 — tree'] })], tmp, sha1);
+    t('[rev] a directory is FILE_NOT_FOUND, never a readable file', r[0].missing === 'FILE_NOT_FOUND');
+    // non-regular entries: a symlink and a submodule, added straight to the index
+    sh(['update-index', '--add', '--cacheinfo', `120000,${sh(['hash-object', '-w', path.join(tmp, 'auth.py')])},link.py`]);
+    sh(['update-index', '--add', '--cacheinfo', `160000,${sha1},vendor`]);
+    sh(['commit', '-q', '-m', 'entries']);
+    const sha3 = sh(['rev-parse', 'HEAD']);
+    r = runAt([Object.assign({}, sup, { file: 'link.py' }), Object.assign({}, sup, { file: 'vendor', lines: '1', evidence: ['vendor:1 — module'] })], tmp, sha3);
+    t('[rev] a symlink and a submodule are UNREADABLE_AT_REV, not a bad citation', r[0].missing === 'UNREADABLE_AT_REV' && r[1].missing === 'UNREADABLE_AT_REV');
+    fs.writeFileSync(path.join(tmp, 'big.bin'), ['version https://git-lfs.github.com/spec/v1', 'oid sha256:' + 'a'.repeat(64), 'size 12345'].join('\n'));
+    sh(['add', 'big.bin']); sh(['commit', '-q', '-m', 'lfs']);
+    r = runAt([Object.assign({}, sup, { file: 'big.bin', lines: '1', evidence: ['big.bin:1 — version https://git-lfs'] })], tmp, sh(['rev-parse', 'HEAD']));
+    t('[rev] an LFS pointer is UNREADABLE_AT_REV', r[0].missing === 'UNREADABLE_AT_REV');
+    sh(['reset', '-q', '--hard', sha2]);
+    fs.writeFileSync(f, AUTH.join('\n'));   // the working tree keeps the old quote, uncommitted
+    // the root may sit below the top level: paths stay confined to it
+    r = runAt([Object.assign({}, sup, { file: 'Util.js', lines: '1-2', evidence: ['Util.js:1 — function a() { return 1;'] }), Object.assign({}, sup, { file: 'auth.py' })], path.join(tmp, 'src'), sha1);
+    t('[rev] a root below the top level reads its own files and never the top level\'s', r[0].status === 'SUPPORTED' && r[1].missing === 'FILE_NOT_FOUND');
+    r = runAt([Object.assign({}, sup, { file: '../auth.py' })], path.join(tmp, 'src'), sha1);
+    t('[rev] ../ from a sub-root is PATH_OUTSIDE_ROOT', r[0].missing === 'PATH_OUTSIDE_ROOT');
+    r = runAt([Object.assign({}, sup, { file: 'src/util.js', lines: '1-2', evidence: ['src/Util.js:1 — function a() { return 1;'] })], tmp, sha1);
+    t('[rev] a path in the wrong letter case is FILE_NOT_FOUND (git is exact; documented)', r[0].missing === 'FILE_NOT_FOUND');
+    // quote_lines: one collapser. lineStarts() must agree with quoteWindow()'s text on every range.
+    const odd = ['  Mixed  CASE line\t', '', '   ', 'İstanbul ΣΑΣ end  ', 'x', ' y '];
+    let agree = true;
+    for (let a = 1; a <= odd.length && agree; a++) for (let b = a; b <= odd.length && agree; b++) {
+      const w = quoteWindow(odd, [a, b]);
+      const st = lineStarts(odd, w.from, w.to);
+      const rebuilt = st.map((s, i) => w.text.slice(s.at, i + 1 < st.length ? st[i + 1].at - 1 : undefined)).join(' ');
+      if (rebuilt !== w.text) agree = false;
+      for (let i = 0; i < st.length; i++) if (w.text.slice(st[i].at, st[i].at + loose(odd[st[i].line - 1]).length) !== loose(odd[st[i].line - 1])) agree = false;
+    }
+    t('[rev] lineStarts agrees with quoteWindow over every range of an irregular fixture', agree);
+    const bigLine = 'const x = 1; '.repeat(160000) + 'needle_in_bundle();';   // ~2 MB on one line
+    const t0 = Date.now();
+    const ql = quoteLines([bigLine], 1, 1, loose(bigLine), ['needle_in_bundle();']);
+    t('[rev] quote_lines on a 2 MB single line is linear (under 2 s) and finds line 1', JSON.stringify(ql) === '[1]' && Date.now() - t0 < 2000);
+    // the environment cannot redirect git away from the root
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-ve-other-'));
+    execFileSync('git', ['-C', other, 'init', '-q'], { windowsHide: true, env: gitEnv() });
+    const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+    process.env.GIT_DIR = path.join(other, '.git'); process.env.GIT_WORK_TREE = other;
+    let envOk = false;
+    try { envOk = resolveRev(tmp, 'HEAD') === sha2 && runAt([sup], tmp, sha1)[0].status === 'SUPPORTED'; } finally {
+      for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+      try { fs.rmSync(other, { recursive: true, force: true }); } catch (_) {}
+    }
+    t('[rev] an exported GIT_DIR/GIT_WORK_TREE does not redirect git away from the root', envOk);
+    let unavailable = null;
+    const savedPath = process.env.PATH;
+    try { process.env.PATH = path.join(tmp, 'no-such-dir'); resolveRev(tmp, 'HEAD'); } catch (e) { unavailable = e; } finally { process.env.PATH = savedPath; }
+    t('[rev] a missing git is GitUnavailable, never "not a commit" or FILE_NOT_FOUND', unavailable instanceof GitUnavailable);
+    t('[rev] a wrong root is GitUnavailable', (() => { try { resolveRev(path.dirname(outside), sha1); return false; } catch (e) { return e instanceof GitUnavailable; } })());
+    r = runAt([Object.assign({}, sup, { file: 'nope.py' })], tmp, sha1);
+    t('[rev] file not in the commit -> FILE_NOT_FOUND', r[0].missing === 'FILE_NOT_FOUND');
+    r = runAt([Object.assign({}, sup, { lines: '900' })], tmp, sha1);
+    t('[rev] lines out of range', r[0].missing === 'LINES_OUT_OF_RANGE');
+    r = runAt([{ status: 'SUSPECTED', file: null, category: 'security', claim: 'maybe', confidence: {} }, null, 42], tmp, sha1);
+    t('[rev] junk records never throw', r.length === 3 && r[0]._evidence_check.checked === false);
+    t('[rev] fingerprint equals the default mode\'s', runAt([sup], tmp, sha1)[0].fingerprint === run([sup], tmp)[0].fingerprint);
+    t('[rev] resolveRev: HEAD, full sha, bad rev, option-shaped rev', resolveRev(tmp, 'HEAD') === sha2 && resolveRev(tmp, sha1) === sha1 && resolveRev(tmp, 'no-such-ref') === null && resolveRev(tmp, '--output=x') === null);
+    t('[rev] resolveRev accepts a 64-hex (sha256 repository) id', /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test('f'.repeat(64)) && resolveRev(tmp, sha1.slice(0, 12)) === sha1);
+    const five = [1, 2, 3, 4, 5].map(() => Object.assign({}, sup));
+    t('[rev] several records on one file agree (one read per blob per run)', runAt(five, tmp, sha1).every((x) => x.status === 'SUPPORTED'));
+
+    // ---- CLI contract
+    const recFile = path.join(tmp, 'records.json');
+    const cli = (args, input, opts) => {
+      try {
+        const stdout = execFileSync(process.execPath, [__filename].concat(args), Object.assign({ encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }, opts || {}));
+        return { code: 0, stdout, stderr: '' };
+      } catch (e) { return { code: e.status, stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }; }
+    };
+    fs.writeFileSync(recFile, JSON.stringify([sup]));
+    let c = cli([recFile, tmp, '--rev', sha1]);
+    t('[cli] --rev <sha> checks against that commit', c.code === 0 && JSON.parse(c.stdout)[0].status === 'SUPPORTED' && c.stdout.indexOf('"quote_lines"') !== -1);
+    c = cli([recFile, tmp, `--rev=${sha1}`]);
+    t('[cli] --rev=<sha> is the same mode', c.code === 0 && JSON.parse(c.stdout)[0].status === 'SUPPORTED' && c.stdout.indexOf('"quote_lines"') !== -1);
+    c = cli([recFile, tmp, '--rve', sha1]);
+    t('[cli] a misspelled option never falls through to the working tree (exit 1, nothing on stdout)', c.code === 1 && c.stdout === '' && /usage/.test(c.stderr));
+    c = cli([recFile, tmp, '--rev', sha1, '--extra']);
+    t('[cli] --rev with a stray option -> exit 1', c.code === 1 && c.stdout === '');
+    c = cli([recFile, tmp, '--rev', 'no-such-ref']);
+    t('[cli] the reason reaches stderr', c.code === 1 && /\[verify-evidence\] not a commit in /.test(c.stderr));
+    c = cli([recFile, tmp, '--rev', sha1], undefined, { env: Object.assign({}, process.env, { PATH: path.join(tmp, 'no-such-dir') }) });
+    t('[cli] git missing -> exit 1 with a git reason, never a verdict', c.code === 1 && c.stdout === '' && /did not complete|rev-parse failed/.test(c.stderr));
+    const absRec = path.join(tmp, 'abs.json');
+    fs.writeFileSync(absRec, JSON.stringify([Object.assign({}, sup, { file: path.join(tmp, 'auth.py') })]));
+    const relRoot = path.basename(tmp), parent = path.dirname(tmp);
+    const fpDefault = JSON.parse(cli([absRec, relRoot], undefined, { cwd: parent }).stdout)[0].fingerprint;
+    const fpRev = JSON.parse(cli([absRec, relRoot, '--rev', sha1], undefined, { cwd: parent }).stdout)[0].fingerprint;
+    t('[cli] fingerprint parity with a relative root and an absolute file', fpDefault === fpRev && typeof fpRev === 'string');
+    c = cli([recFile, tmp, '--rev', sha2]);
+    t('[cli] --rev reads the commit (quote gone at sha2)', c.code === 0 && JSON.parse(c.stdout)[0].status === 'SUSPECTED');
+    c = cli([recFile, tmp]);
+    t('[cli] default mode: working tree, no quote_lines', c.code === 0 && JSON.parse(c.stdout)[0].status === 'SUPPORTED' && c.stdout.indexOf('quote_lines') === -1);
+    c = cli([path.join(tmp, 'missing.json'), tmp, '--rev', sha1]);
+    t('[cli] --rev + unreadable input -> exit 1, nothing on stdout', c.code === 1 && c.stdout === '');
+    fs.writeFileSync(path.join(tmp, 'obj.json'), '{"not":"an array"}');
+    c = cli([path.join(tmp, 'obj.json'), tmp, '--rev', sha1]);
+    t('[cli] --rev + non-array input -> exit 1, nothing on stdout', c.code === 1 && c.stdout === '');
+    fs.writeFileSync(path.join(tmp, 'bad.json'), '{not json');
+    c = cli([path.join(tmp, 'bad.json'), tmp, '--rev', sha1]);
+    t('[cli] --rev + invalid JSON -> exit 1', c.code === 1 && c.stdout === '');
+    c = cli([recFile, tmp, '--rev', 'no-such-ref']);
+    t('[cli] --rev with an unknown rev -> exit 1', c.code === 1 && c.stdout === '');
+    c = cli([recFile, tmp, '--rev']);
+    t('[cli] --rev without a value -> exit 1', c.code === 1 && c.stdout === '');
+    c = cli([recFile, path.join(tmp, 'nowhere'), '--rev', sha1]);
+    t('[cli] --rev with a missing root -> exit 1', c.code === 1 && c.stdout === '');
+    c = cli([path.join(tmp, 'missing.json'), tmp]);
+    t('[cli] default mode + unreadable input -> [] exit 0 (unchanged)', c.code === 0 && JSON.parse(c.stdout).length === 0);
+    const outsideRec = path.join(path.dirname(outside), 'records.json');
+    fs.writeFileSync(outsideRec, JSON.stringify([sup]));
+    c = cli([outsideRec, tmp, '--rev', sha1]);
+    t('[cli] the records file may live outside the root (only cited files are confined)', c.code === 0 && JSON.parse(c.stdout)[0].status === 'SUPPORTED');
+    c = cli([recFile, tmp, '--bogus']);
+    t('[cli] default mode refuses a stray option', c.code === 1 && c.stdout === '');
+    c = cli([recFile, tmp, 'third']);
+    t('[cli] default mode refuses a third argument', c.code === 1 && c.stdout === '');
+    fs.writeFileSync(path.join(tmp, 'empty.json'), '[]');
+    c = cli([path.join(tmp, 'empty.json'), tmp, '--rev', sha1]);
+    t('[cli] --rev + empty array -> [] exit 0', c.code === 0 && c.stdout.trim() === '[]');
+  } } catch (e) {
+    fails++; n++;
+    console.error('FAIL: the --rev cases threw:', e && e.stack ? e.stack : e);
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); fs.rmSync(path.dirname(outside), { recursive: true, force: true }); } catch (_) {}
+  }
   console.log(fails ? `\n${fails}/${n} FAILED` : `\nALL PASS (${n}/${n})`);
   process.exit(fails ? 1 : 0);
 }
 
-module.exports = { CTX, NL, GROUNDED, parseLines, quoteFromEvidence, loose, quoteWindow, quoteInWindow, run };
+module.exports = { CTX, NL, GROUNDED, MIN_QUOTE_LINES, parseLines, quoteFromEvidence, loose, quoteWindow, quoteInWindow, run, runAt, resolveRev, repoRelative, quoteLines, lineStarts, GitUnavailable };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
+  const die = (m) => { process.stderr.write(`[verify-evidence] ${m}\n`); process.exit(1); };
+  const revAt = args.findIndex((a) => a === '--rev' || a.startsWith('--rev='));
   if (args[0] === '--selftest') {
     selftest();
+  } else if (revAt !== -1) {
+    // --rev mode: strict input, committed tree, confined paths. Nothing on stdout unless it ran.
+    const eq = args[revAt].startsWith('--rev=');
+    const rev = eq ? args[revAt].slice(6) : args[revAt + 1];
+    const pos = args.slice(0, revAt).concat(args.slice(revAt + (eq ? 1 : 2)));
+    if (!rev || pos.length !== 2 || pos.some((a) => a.startsWith('--'))) die('usage: verify-evidence.js <records.json> <repo-root> --rev <sha>');
+    const [file, repoRoot] = pos;
+    let st = null;
+    try { st = fs.statSync(repoRoot); } catch (_) { st = null; }
+    if (!st || !st.isDirectory()) die(`repo root not found: ${repoRoot}`);
+    let text = null;
+    try { text = fs.readFileSync(file, 'utf8'); } catch (_) { die(`cannot read ${file}`); }
+    let records = null;
+    try { records = JSON.parse(text); } catch (_) { die(`${file} is not JSON`); }
+    if (!Array.isArray(records)) die(`${file} is not a JSON array of records`);
+    try {
+      const sha = resolveRev(repoRoot, rev);
+      if (!sha) die(`not a commit in ${repoRoot}: ${rev}`);
+      process.stdout.write(JSON.stringify(runAt(records, repoRoot, sha), null, 2));
+    } catch (e) {
+      if (e instanceof GitUnavailable) die(e.message);
+      throw e;
+    }
   } else {
+    if (args.length > 2 || args.some((a) => a.startsWith('--'))) die('usage: verify-evidence.js <records.json> <repo-root> [--rev <sha>] | --selftest');
     const file = args[0];
     const repoRoot = args[1] || process.cwd();
     let text = '';
