@@ -254,7 +254,7 @@ Ideas never enter defect counts, the action order, degraded lenses or any gate.
   `<run-dir>`, the `--diff` context file) never decide the root: use the root of the repository
   they were collected from. If the root is your home directory, a drive root, `/`, the temp dir
   itself or `<run-dir>`, skip the pass (the gate would accept any file under it as a ground) and
-  report `Ideas: failed (root: <path>)`. Every `prompt propose` call passes it as `--root`.
+  record it in step 5 with `--failed root --reason "<path>"`. Every `prompt propose` call passes it as `--root`.
 - `<findings>` = `--findings "<run-dir>/checked.json"`, the **final** one. With `--reproduce`,
   write the post-Pass-3 records to `<run-dir>/records.pass3.json`, run
   `node "<this skill dir>/verify-evidence.js" "<run-dir>/records.pass3.json" "<repo-root>" > "<run-dir>/checked.pass3.json"`,
@@ -332,7 +332,7 @@ cannot be fixed, stop the pass and record it in step 5 with `--failed <step> --r
    Exit 0 writes `<run-dir>/ideas.section.md` and `<run-dir>/ideas.report.json`; its second stdout
    line is the Ideas line. On a non-zero exit run the same command once more; if it fails again,
    use neither file: the report says `Ideas: failed (assemble: <its stderr>)` and `meta.ideas` is
-   `{"ran": false, "reason": "failed: assemble"}` with `"ideas": []`. The format of the Ideas line
+   `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<its stderr>"}` with `"ideas": []`. The format of the Ideas line
    and of `meta.ideas` lives in `assemble-report.js`'s header, nowhere else.
 
 ---
@@ -471,7 +471,7 @@ untouched), then atomic-rename; on a failed check or write emit the JSON inline 
 counts, ideas}, "findings": [<record v2>...], "ideas": [...] }`. `findings` and `meta.counts` are
 unchanged by the idea pass. `meta.ideas` = `ideas.report.json` `.meta_ideas` and `ideas` =
 `ideas.report.json` `.ideas`, copied as they are (when `assemble-report.js ideas` itself failed
-twice: `{"ran": false, "reason": "failed: assemble"}` and `[]`). Fingerprints let CI dedup across
+twice: `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<its stderr>"}` and `[]`). Fingerprints let CI dedup across
 runs (link only; never suppress a prior REJECTED). In a gate run (`--run-tag`) none of this
 applies: the JSON report comes from `assemble-report.js finish` only (see "Gate run").
 

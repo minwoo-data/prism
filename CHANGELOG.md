@@ -9,7 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 Merge gate support for ddaro (S0a, S0b) and one report assembler for the idea pass (S0c).
 Nothing changes for the reviews as they run today except where the idea pass's outcome is
-written: by a script now, in every skill.
+written: by a script now, in every review skill (prism, prism-all, prism-codex).
 
 ### Added
 - **`assemble-report.js ideas` and `check-ideas`** (S0c, prism, prism-all and prism-codex): the

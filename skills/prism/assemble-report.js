@@ -183,7 +183,7 @@ function lensSet(angles) {
 // Option parsing: `single` take one value, `flags` take an optional value (a following token that
 // does not start with --), `multi` repeat. Positionals are refused. A value may start with `--`
 // only for --skipped (its values are option names) and --reason.
-const VALUE_MAY_DASH = ['--skipped', '--reason'];
+const VALUE_MAY_DASH = ['--skipped'];
 function parseOpts(args, single, flags, multi) {
   const opts = {};
   for (const m of multi || []) opts[m] = [];
@@ -283,7 +283,7 @@ function fencesClosed(text) {
 
 // The parse output is taken from parse-findings.js itself, run again on the answer file: a stale
 // or fabricated .txt.json next to the answer is refused.
-const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x)) ? Object.keys(x).sort().reduce((a, kk) => { a[kk] = x[kk]; return a; }, {}) : x);
+const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x)) ? Object.fromEntries(Object.keys(x).sort().map((kk) => [kk, x[kk]])) : x);
 function parseAgain(txtFile, angle) {
   try {
     return JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'parse-findings.js'), txtFile, angle], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 60000 }));
@@ -349,14 +349,24 @@ const IDEA_ENGINES = ['claude', 'codex', 'claude+codex'];
 const IDEAS_SECTION = 'ideas.section.md';
 const IDEAS_REPORT = 'ideas.report.json';
 const IDEAS_HEADING = '## IDEAS (alternatives, not defects; not in the action order)';
-const oneLine = (s) => String(s == null ? '' : s).replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim();
+const ASSEMBLE_FAILED_SHAPE = '{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<stderr>"}';
+const oneLine = (s, max) => String(s == null ? '' : s).replace(ZW, '').replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max || 300);
+const ENGINE_NAMES = ['claude', 'codex'];
+// The rank meta fields the report carries (references/ideas.md); anything else in ideas.json is dropped.
+const RANK_META = ['proposed', 'grounded', 'keep', 'weak', 'drop', 'unchecked', 'merged_away', 'ungrounded', 'over_cap', 'invalid', 'bad_lines', 'overflow', 'unclosed', 'engines', 'degraded_engines', 'degraded_notes', 'check_degraded', 'check_partial', 'check'];
 
 function ideasOff(reason) { return { ran: false, reason, outcome: 'skipped' }; }
 
 function renderIdeas(file) {
   try {
-    return { text: execFileSync(process.execPath, [path.join(__dirname, 'verify-ideas.js'), 'render', file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 60000 }) };
-  } catch (e) { return { error: oneLine(String(e && e.stderr || '').split(/\r?\n/).find(Boolean) || (e && e.message) || 'render failed') }; }
+    const text = execFileSync(process.execPath, [path.join(__dirname, 'verify-ideas.js'), 'render', file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+    if (!text.trim()) return { error: 'render printed nothing' };
+    return { text };
+  } catch (e) {
+    if (e && (e.code === 'ETIMEDOUT' || e.signal)) return { error: `render did not complete: ${e.code || e.signal}` };
+    const lines = String(e && e.stderr || '').split(/\r?\n/).filter(Boolean);
+    return { error: oneLine(lines.find((l) => l.startsWith('[verify-ideas]')) || lines[0] || (e && (e.code || e.message)) || 'render failed') };
+  }
 }
 
 // The Ideas header line, one format for every engine set. `extras` are the ` · ...` notes.
@@ -366,7 +376,7 @@ function ideasLine(state, extras) { return `Ideas: ${state}${extras.map((e) => `
 // { outcome, line, section, meta_ideas, ideas }.
 function ideasResult(o, runDir) {
   const engines = o.engines;
-  const dropped = o.dropped.length ? [`dropped targets: ${o.dropped.map(oneLine).join(', ')}`] : [];
+  const dropped = o.dropped.length ? [`dropped targets: ${o.dropped.map((d) => oneLine(d, 200)).join(', ')}`] : [];
   if (o.skipped) {
     return { outcome: 'skipped', line: ideasLine(`off (${o.skipped})`, dropped), section: '', meta_ideas: ideasOff(o.skipped), ideas: [] };
   }
@@ -385,9 +395,12 @@ function ideasResult(o, runDir) {
   if (!rank || rank.kind !== 'prism-ideas-rank' || !Array.isArray(rank.ideas) || !rank.meta || typeof rank.meta !== 'object') return failed('rank', `${file} is not the output of verify-ideas.js rank`);
   const r = renderIdeas(file);
   if (r.error) return failed('render', r.error);
-  const m = rank.meta;
-  const list = (v) => (Array.isArray(v) ? v.map(String) : []);
-  const degraded = list(m.degraded_engines), unchecked = list(m.check_degraded), partialEngines = list(m.check_partial);
+  const m = {};
+  for (const k of RANK_META) if (k in rank.meta) m[k] = rank.meta[k];
+  const list = (v, what) => { if (v === undefined) return []; if (!Array.isArray(v) || v.some((e) => ENGINE_NAMES.indexOf(e) === -1)) return null; return v.slice(); };
+  const ran = list(m.engines, 'engines'), degraded = list(m.degraded_engines), unchecked = list(m.check_degraded), partialEngines = list(m.check_partial);
+  if (!ran || !degraded || !unchecked || !partialEngines) return failed('rank', `${file}: an engine list holds something other than ${ENGINE_NAMES.join('|')}`);
+  if (ran.slice().sort().join('+') !== engines.split('+').sort().join('+')) return failed('rank', `${file} ran ${ran.join('+') || 'no engine'}, not --engines ${engines}`);
   const extras = [];
   if (engines === 'claude+codex') {
     if (degraded.length) extras.push(`proposer degraded: ${degraded.join(', ')}`);
@@ -407,6 +420,7 @@ function ideasResult(o, runDir) {
     line: ideasLine(`on (${engines})`, extras.concat(dropped)),
     section: r.text,
     meta_ideas: Object.assign({}, m, { ran: true, outcome }),
+    source_sha256: sha256(fs.readFileSync(file)),
     ideas: rank.ideas,
   };
 }
@@ -416,17 +430,24 @@ function ideasResult(o, runDir) {
 // inputs rewrites the same bytes.
 function writeIdeasFiles(runDir, res) {
   const section = res.line + '\n' + (res.section ? '\n' + res.section : '');
-  const report = JSON.stringify({ meta_ideas: res.meta_ideas, ideas: res.ideas, section_sha256: sha256(section) }, null, 2) + '\n';
+  const report = JSON.stringify(Object.assign({ meta_ideas: res.meta_ideas, ideas: res.ideas, section_sha256: sha256(section) }, res.source_sha256 ? { source_sha256: res.source_sha256 } : {}), null, 2) + '\n';
   const tag = `.tmp-${process.pid}-${Date.now().toString(36)}`;
   const sFile = path.join(runDir, IDEAS_SECTION), rFile = path.join(runDir, IDEAS_REPORT);
-  fs.writeFileSync(sFile + tag, section);
-  fs.writeFileSync(rFile + tag, report);
-  fs.renameSync(sFile + tag, sFile);
-  fs.renameSync(rFile + tag, rFile);
+  const clean = () => { for (const f of [sFile + tag, rFile + tag]) { try { fs.unlinkSync(f); } catch (_) { /* gone */ } } };
+  try {
+    fs.writeFileSync(sFile + tag, section, { flag: 'wx' });
+    fs.writeFileSync(rFile + tag, report, { flag: 'wx' });
+    fs.renameSync(sFile + tag, sFile);
+    try { fs.renameSync(rFile + tag, rFile); }
+    catch (e) { try { fs.unlinkSync(sFile); } catch (_) { /* no half pair */ } throw e; }
+  } catch (e) { clean(); refuse(`cannot write ${IDEAS_SECTION}/${IDEAS_REPORT} in ${runDir}: ${e && (e.code || e.message)}`); }
 }
 
 function ideas(args) {
-  const o = parseOpts(args.slice(1), ['--engines', '--skipped', '--failed', '--reason', '--checker-same-engine'], ['--ranked'], ['--dropped-target']);
+  const rest = args.slice(1);
+  const ranked = rest.indexOf('--ranked') !== -1;
+  const o = parseOpts(rest.filter((a) => a !== '--ranked'), ['--engines', '--skipped', '--failed', '--reason', '--checker-same-engine'], [], ['--dropped-target']);
+  if (ranked) o['--ranked'] = true;
   const runDir = args[0];
   if (!runDir || runDir.startsWith('--')) refuse('ideas takes <run-dir> first');
   let st = null;
@@ -460,7 +481,15 @@ function checkIdeas(args) {
   const [reportFile, runDir] = args;
   const report = readJson(reportFile, 'report');
   if (!report || typeof report !== 'object' || !report.meta || typeof report.meta !== 'object') refuse(`${reportFile} has no meta object`);
+  // The documented fallback when `ideas` itself failed twice: no files, a fixed meta.ideas, no ideas.
+  if (!fs.existsSync(path.join(runDir, IDEAS_REPORT)) && !fs.existsSync(path.join(runDir, IDEAS_SECTION))) {
+    const mi = report.meta.ideas;
+    const okShape = mi && typeof mi === 'object' && mi.ran === false && mi.reason === 'failed: assemble' && mi.outcome === 'failed' && mi.stage === 'assemble' && typeof mi.detail === 'string' && Object.keys(mi).length === 5;
+    if (!okShape || !Array.isArray(report.ideas) || report.ideas.length) refuse(`no ${IDEAS_REPORT} in ${runDir}: only the failed-assemble fallback (${ASSEMBLE_FAILED_SHAPE}) is accepted without it`);
+    return `check-ideas ok: no ideas files; the report carries the failed-assemble fallback`;
+  }
   const expected = readJson(path.join(runDir, IDEAS_REPORT), IDEAS_REPORT);
+  if (!expected || typeof expected !== 'object' || !expected.meta_ideas || typeof expected.meta_ideas !== 'object' || !Array.isArray(expected.ideas) || typeof expected.section_sha256 !== 'string') refuse(`${IDEAS_REPORT} has the wrong shape: ${path.join(runDir, IDEAS_REPORT)}`);
   const section = readText(path.join(runDir, IDEAS_SECTION), IDEAS_SECTION);
   if (sha256(section) !== expected.section_sha256) refuse(`${IDEAS_SECTION} does not match the section_sha256 in ${IDEAS_REPORT} (one of them was edited after \`ideas\` ran)`);
   if (canon(report.meta.ideas) !== canon(expected.meta_ideas)) refuse(`meta.ideas differs from ${IDEAS_REPORT} meta_ideas`);
@@ -1076,6 +1105,31 @@ function selftest() {
     r = cli(skill, ['ideas', dir, '--engines', 'claude+codex', '--ranked', '--checker-same-engine', 'codex']);
     f = files();
     t('ideas: a degraded proposer + same-engine checker -> partial, both on the Ideas line', ok(r) && f.section.startsWith('Ideas: on (claude+codex) · proposer degraded: codex · checker: same engine, codex degraded\n') && f.report.meta_ideas.outcome === 'partial');
+    writeRank({ engines: ['claude', 'codex'], degraded_engines: ['codex'] });
+    r = cli(skill, ['ideas', dir, '--engines', 'claude+codex', '--ranked']);
+    f = files();
+    t('ideas: a degraded proposer alone -> partial', ok(r) && f.section.startsWith('Ideas: on (claude+codex) · proposer degraded: codex\n') && f.report.meta_ideas.outcome === 'partial');
+    writeRank({ engines: ['claude', 'codex'] });
+    r = cli(skill, ['ideas', dir, '--engines', 'claude+codex', '--ranked', '--checker-same-engine', 'codex']);
+    f = files();
+    t('ideas: --checker-same-engine alone -> partial', ok(r) && f.section.startsWith('Ideas: on (claude+codex) · checker: same engine, codex degraded\n') && f.report.meta_ideas.outcome === 'partial');
+    writeRank({ engines: ['claude'] });
+    r = cli(skill, ['ideas', dir, '--engines', 'claude+codex', '--ranked']);
+    f = files();
+    t('ideas: --engines that ideas.json did not run -> failed (rank)', ok(r) && f.report.meta_ideas.outcome === 'failed' && /ran claude, not --engines claude\+codex/.test(f.report.meta_ideas.detail));
+    writeRank({ engines: ['claude'], degraded_engines: ['<img src=x>'] });
+    r = cli(skill, ['ideas', dir, '--engines', 'claude', '--ranked']);
+    t('ideas: an engine list with something other than claude|codex -> failed (rank)', ok(r) && files().report.meta_ideas.stage === 'rank');
+    writeRank({ reason: 'planted', stage: 'planted', outcome: 'completed', detail: 'x', extra_key: 1 });
+    r = cli(skill, ['ideas', dir, '--engines', 'claude', '--ranked']);
+    f = files();
+    t('ideas: only the rank meta fields are copied (planted reason/stage/extra keys dropped)', ok(r) && !('reason' in f.report.meta_ideas) && !('stage' in f.report.meta_ideas) && !('extra_key' in f.report.meta_ideas) && typeof f.report.source_sha256 === 'string');
+    r = cli(skill, ['ideas', dir, '--engines', 'claude', '--ranked', 'oops']);
+    t('ideas: a stray value after --ranked is refused', refused(r, /unexpected argument/));
+    r = cli(skill, ['ideas', dir, '--engines', 'claude', '--failed', 'gate', '--reason', '--ranked']);
+    t('ideas: --reason may not swallow a flag', refused(r, /--reason needs a value/));
+    r = cli(skill, ['ideas', dir, '--engines', 'claude', '--failed', 'gate', '--reason', 'x'.repeat(5000)]);
+    t('ideas: a reason is capped', ok(r) && files().section.split('\n')[0].length < 400);
     writeRank({ engines: ['claude', 'codex'], check_degraded: ['claude'] });
     r = cli(skill, ['ideas', dir, '--engines', 'claude+codex', '--ranked']);
     f = files();
@@ -1138,6 +1192,21 @@ function selftest() {
     fs.appendFileSync(path.join(dir, IDEAS_SECTION), '- IDEA-9 [planted]\n');
     r = cli(skill, ['check-ideas', repFile, dir]);
     t('check-ideas: an edited ideas.section.md -> exit 1', refused(r, /does not match the section_sha256/));
+    fs.writeFileSync(path.join(dir, IDEAS_REPORT), 'null');
+    fs.writeFileSync(repFile, JSON.stringify(good));
+    r = cli(skill, ['check-ideas', repFile, dir]);
+    t('check-ideas: an ideas.report.json that is not an object -> exit 1, no crash', refused(r, /wrong shape/));
+    fs.unlinkSync(path.join(dir, IDEAS_REPORT)); fs.unlinkSync(path.join(dir, IDEAS_SECTION));
+    fs.writeFileSync(repFile, JSON.stringify({ meta: { ideas: { ran: false, reason: 'failed: assemble', outcome: 'failed', stage: 'assemble', detail: 'boom' } }, ideas: [] }));
+    r = cli(skill, ['check-ideas', repFile, dir]);
+    t('check-ideas: without the files, only the failed-assemble fallback passes', ok(r) && /failed-assemble fallback/.test(r.stdout));
+    fs.writeFileSync(repFile, JSON.stringify({ meta: { ideas: { ran: false, reason: '--no-ideas', outcome: 'skipped' } }, ideas: [] }));
+    r = cli(skill, ['check-ideas', repFile, dir]);
+    t('check-ideas: without the files, any other meta.ideas is refused', refused(r, /only the failed-assemble fallback/));
+    fs.writeFileSync(repFile, JSON.stringify({ meta: { ideas: { ran: false, reason: 'failed: assemble', outcome: 'failed', stage: 'assemble', detail: 'boom', __proto__: { x: 1 } } }, ideas: [] }));
+    r = cli(skill, ['check-ideas', repFile, dir]);
+    t('check-ideas: a __proto__ key does not break the comparison', r.code === 0 || r.code === 1);
+    cli(skill, ['ideas', dir, '--engines', 'claude', '--skipped', '--quick']);
     fs.writeFileSync(repFile, '{not json');
     r = cli(skill, ['check-ideas', repFile, dir]);
     t('check-ideas: a report that is not JSON -> exit 1', refused(r, /not JSON/));
@@ -1162,7 +1231,7 @@ if (require.main === module) {
   const cmd = argv[0];
   const commands = { begin, finish, ideas, 'check-ideas': checkIdeas };
   if (cmd === '--selftest') { selftest(); }
-  else if (commands[cmd]) {
+  else if (Object.prototype.hasOwnProperty.call(commands, cmd)) {
     try {
       process.stdout.write(commands[cmd](argv.slice(1)) + '\n');
     } catch (e) {

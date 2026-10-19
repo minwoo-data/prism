@@ -132,7 +132,7 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 
 렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"에 답한다 — 아이디어 렌즈당 최대 3개의 근거 있는 대안을 스크립트가 gate하고, 쓰지 않은 checker가 판정한다. Pass 2/3 뒤에, 코드·설계 대상 모두에서 돈다(`--include-improvements`가 있으면 `--quick`이어도 돈다). 규칙·gate 검사·실패 처리는 `references/ideas.md`(단계가 degraded일 때만 읽는다). **프롬프트를 손으로 쓰지 않는다** — Codex 프롬프트는 `codex-run.sh ideas|idea-check`가 `verify-ideas.js prompt`로 만들고, 계약·판정도 손대지 않는다. 아이디어는 결함 카운트·액션 순서·degraded angle·어떤 게이트에도 들어가지 않는다.
 
-- `<repo-root>` = 검토한 저장소의 루트, Pass 2에서 `verify-evidence.js`가 받은 것과 같은 루트: 대상 파일이 있는 저장소에서 `git rev-parse --show-toplevel`(임시 폴더 아래의 worktree도 그대로), git이 아니면 대상들의 공통 디렉터리. 이번 런이 쓰거나 모은 파일(`<run-dir>` 안의 것, 수집한 diff 컨텍스트)은 루트를 정하는 데 쓰지 않는다 — 그 내용을 뽑아 온 저장소의 루트를 쓴다. 루트가 홈·드라이브 루트·`/`·임시 폴더 자체·`<run-dir>`이면 Pass 4를 돌리지 않는다(gate가 그 아래 아무 파일이나 근거로 받는다) — `Ideas: failed (root: <경로>)`. `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수).
+- `<repo-root>` = 검토한 저장소의 루트, Pass 2에서 `verify-evidence.js`가 받은 것과 같은 루트: 대상 파일이 있는 저장소에서 `git rev-parse --show-toplevel`(임시 폴더 아래의 worktree도 그대로), git이 아니면 대상들의 공통 디렉터리. 이번 런이 쓰거나 모은 파일(`<run-dir>` 안의 것, 수집한 diff 컨텍스트)은 루트를 정하는 데 쓰지 않는다 — 그 내용을 뽑아 온 저장소의 루트를 쓴다. 루트가 홈·드라이브 루트·`/`·임시 폴더 자체·`<run-dir>`이면 Pass 4를 돌리지 않는다(gate가 그 아래 아무 파일이나 근거로 받는다) — 5단계에서 `--failed root --reason "<경로>"`로 기록한다. `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수).
 - `<findings>` = `--findings <run-dir>/checked.json`, **최종** checked.json. `--reproduce`면 Pass 3 이후 record를 `<run-dir>/records.pass3.json`에 쓰고 `node "<skill dir>/verify-evidence.js" <run-dir>/records.pass3.json "<repo-root>" > <run-dir>/checked.pass3.json`을 돌린 다음, exit 0이고 배열이 비어 있지 않을 때만 그 파일을 `<run-dir>/checked.json`으로 옮긴다. 한 명령에서 같은 파일을 입력이자 출력으로 쓰지 않는다(셸이 먼저 비우고, `verify-evidence.js`는 빈 입력에 `[]`를 낸다). 후보 0건(Pass 2 스킵)이거나 `--quick`이면 `<findings>`를 뺀다.
 - `<targets>` = 렌즈가 읽은 파일마다 `--target <file>` (discovery와 같은 목록).
 - **먼저 초기화**: `<run-dir>`의 이전 Pass 4 결과(`codex.gated.json`, `codex.checked-ideas.json`, `ideas.json`, `ideas.section.md`, `ideas.report.json`)를 지운다(`--artifacts docs`는 같은 폴더를 다시 쓴다). Codex 답 파일은 `codex-run.sh`가 매 콜 전에 비운다.
@@ -156,7 +156,7 @@ node "<skill dir>/assemble-report.js" ideas <run-dir> --engines codex --ranked [
 node "<skill dir>/assemble-report.js" ideas <run-dir> --engines codex --failed <단계> --reason "<사유>"
 node "<skill dir>/assemble-report.js" ideas <run-dir> --engines codex --skipped --no-ideas
 ```
-5단계가 exit 0이면 `<run-dir>/ideas.section.md`와 `<run-dir>/ideas.report.json`이 쓰이고, stdout 둘째 줄이 Ideas 줄이다. 0이 아니면 같은 명령을 한 번 더 돌리고, 그래도 안 되면 두 파일을 쓰지 않는다 — 리포트는 `Ideas: failed (assemble: <stderr>)`, `meta.ideas`는 `{"ran": false, "reason": "failed: assemble"}`, `"ideas": []`. Ideas 줄과 `meta.ideas`의 형식은 `assemble-report.js` 머리에만 있다.
+5단계가 exit 0이면 `<run-dir>/ideas.section.md`와 `<run-dir>/ideas.report.json`이 쓰이고, stdout 둘째 줄이 Ideas 줄이다. 0이 아니면 같은 명령을 한 번 더 돌리고, 그래도 안 되면 두 파일을 쓰지 않는다 — 리포트는 `Ideas: failed (assemble: <stderr>)`, `meta.ideas`는 `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<its stderr>"}`, `"ideas": []`. Ideas 줄과 `meta.ideas`의 형식은 `assemble-report.js` 머리에만 있다.
 
 ---
 
@@ -178,7 +178,7 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 <`<run-dir>/ideas.section.md`의 둘째 줄부터 그대로 — 첫 줄이 `## IDEAS (...)` 제목이다. 선택지이지 task가 아니다. off면 없고, failed면 `## IDEAS` 아래 실패 한 줄>
 ```
 
-`{k}` = 돌린 렌즈셋 크기(defect 5, design 4, `--redteam`이면 +1). `[N/{k} agreement]`는 우선순위 신호. 단일 모델이므로 합의만으로 MEDIUM 상한. `--quick`: 전부 SUSPECTED. `--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-codex/<slug>-<run-id>/`) 원자적 출력(temp write → `node "<skill dir>/assemble-report.js" check-ideas <임시 파일> <run-dir>` exit 0 → rename; 실패 시 인라인 + `json_output: failed`). `findings`·`meta.counts`는 아이디어 pass와 무관하게 그대로이고, `meta.ideas` = `ideas.report.json`의 `.meta_ideas`, 최상위 `ideas` = 그 `.ideas`를 그대로 복사한다(`assemble-report.js ideas`가 두 번 실패했으면 `{"ran": false, "reason": "failed: assemble"}`와 `[]`). Ideas 줄과 `meta.ideas`의 형식은 `assemble-report.js` 머리에만 있다.
+`{k}` = 돌린 렌즈셋 크기(defect 5, design 4, `--redteam`이면 +1). `[N/{k} agreement]`는 우선순위 신호. 단일 모델이므로 합의만으로 MEDIUM 상한. `--quick`: 전부 SUSPECTED. `--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-codex/<slug>-<run-id>/`) 원자적 출력(temp write → `node "<skill dir>/assemble-report.js" check-ideas <임시 파일> <run-dir>` exit 0 → rename; 실패 시 인라인 + `json_output: failed`). `findings`·`meta.counts`는 아이디어 pass와 무관하게 그대로이고, `meta.ideas` = `ideas.report.json`의 `.meta_ideas`, 최상위 `ideas` = 그 `.ideas`를 그대로 복사한다(`assemble-report.js ideas`가 두 번 실패했으면 `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<its stderr>"}`와 `[]`). Ideas 줄과 `meta.ideas`의 형식은 `assemble-report.js` 머리에만 있다.
 
 ---
 

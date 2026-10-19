@@ -95,7 +95,7 @@ and these fields are added:
 | `stage` | with `failed`: the step, `root` \| `propose` \| `gate` \| `check` \| `rank` \| `render` |
 | `detail` | with `failed`: the reason, one line |
 
-A 0.5.0 consumer that reads only `ran` and `reason` sees no change. The Markdown and the JSON
+A 0.5.0 consumer that reads only `ran` and `reason` sees no change. When `ideas` itself failed twice the report carries `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<stderr>"}` with no files, the one shape `check-ideas` accepts without them. The Markdown and the JSON
 come from one result: `ideas.report.json` carries `section_sha256` of `ideas.section.md`, and
 `assemble-report.js check-ideas <report> <run-dir>` refuses a report whose `meta.ideas` or `ideas`
 differ from the files or whose section was edited.
