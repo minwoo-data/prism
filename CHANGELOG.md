@@ -91,17 +91,20 @@ which replaces the Improvement lens (S3).
     degraded idea call never enters `meta.degraded_angles` or DEGRADED ANGLES.
   - `--reproduce` re-checks the post-Pass-3 records from `records.pass3.json` and replaces
     `checked.json` only on exit 0 with a non-empty result (an in-place rerun emptied it).
-  - A repo root that is the home directory, a drive root or `/` skips the pass (`failed (root)`).
+  - The repo root is the reviewed repository's (the one Pass 2 used), never a context file's temp
+    folder; a root that is the home directory, a drive root, `/` or the temp dir skips the pass.
     Grouping treats idea text as data.
   - `/prism` creates its run dir once, before Pass 1, with `mktemp -d` (private, no shared parent)
-    and prints a Windows-openable path that every later command and agent prompt uses literally;
-    `$RUN` did not survive between Bash calls.
+    and prints a Windows-openable path, without moving the working directory, that every later
+    command and agent prompt uses literally; `$RUN` did not survive between Bash calls. `--quick`
+    with the alias still reaches Pass 4.
   - Lens counts in headers and agreement tags use the size of the lens set that ran (design 4,
     defect 5, +1 with `--redteam`); the design set no longer reads as a lost lens.
   - `codex-run.sh`: the oversized idea-prompt hint names `--no-ideas` outside `/prism-ideas`; the
     retired-angle selftest checks the message.
-  - `verify-independence.js` lints the skill's SKILL.md: `--root` on every `prompt propose` and
-    `codex-run.sh" ideas` command line, no retired angle in the `<angle>` list.
+  - `verify-independence.js` lints the skill's SKILL.md: every `verify-ideas.js` / `codex-run.sh`
+    command line must use a subcommand and options that script's own Usage header lists, idea-prompt
+    builds need `--root`, and no retired angle is in the `<angle>` list.
   - `commands/prism.md` lists `--no-ideas` and the alias (until S4 folds it into the skill).
 - `verify-evidence.js` exports its quote matcher (`quoteWindow` / `quoteInWindow`) for
   verify-ideas.js. Its CLI output and selftest are unchanged, and the CLI only runs when invoked

@@ -88,19 +88,45 @@ function checkNoCrossRefs() {
 }
 
 // SKILL.md's command lines are the contract between the orchestrator and the scripts, and nothing
-// else reads them. Lint the rules a CLI change broke before: --root on every idea-prompt build and
-// no retired discovery angle. Only command forms (`.js" prompt`, `.sh" ideas`) are checked; prose
-// that names a subcommand is not a command line.
+// else reads them. Every `verify-ideas.js" <cmd>` / `codex-run.sh" <cmd>` command line must name a
+// subcommand that script's own Usage header lists and use only the options that header gives it;
+// idea-prompt builds need --root; the retired angle stays out of the <angle> list. Only command forms
+// (a closing quote after the script name) are checked: prose that names a subcommand is not a command.
+function scriptUsage(rel, prefix, name) {
+  const file = path.join(SELF_DIR, rel);
+  if (!fs.existsSync(file)) return null;
+  const table = {};
+  for (const l of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    if (!l.startsWith(prefix)) continue;
+    const m = l.slice(prefix.length).match(new RegExp(`^${name}\\s+((?:prompt\\s+)?[a-z-]+)(.*)$`));
+    if (m) table[m[1].replace(/\s+/, ' ')] = new Set((m[2].match(/--[a-z][a-z-]*/g) || []));
+  }
+  return table;
+}
 function checkSkillCommands() {
-  const lines = fs.readFileSync(path.join(SELF_DIR, 'SKILL.md'), 'utf8').split('\n');
+  const usage = {
+    'verify-ideas.js': scriptUsage('verify-ideas.js', ' *   node ', 'verify-ideas\\.js'),
+    'codex-run.sh': scriptUsage('codex-run.sh', '#   ', 'codex-run\\.sh'),
+  };
+  const lines = fs.readFileSync(path.join(SELF_DIR, 'SKILL.md'), 'utf8').split(/\r?\n/);
   const bad = [];
   lines.forEach((l, i) => {
-    if (/verify-ideas\.js"\s+prompt\s+propose\b/.test(l) && !/\s--root\s/.test(l)) bad.push(`line ${i + 1}: prompt propose without --root`);
-    if (/codex-run\.sh"\s+ideas\s/.test(l) && !/\s--root\s/.test(l)) bad.push(`line ${i + 1}: codex-run.sh ideas without --root`);
-    if (/`<angle>`/.test(l) && /\bimprovement\b/.test(l)) bad.push(`line ${i + 1}: the retired improvement angle is listed`);
+    const at = `line ${i + 1}`;
+    const re = /(verify-ideas\.js|codex-run\.sh)"\s+((?:prompt\s+)?[a-z-]+)/g;
+    let m;
+    while ((m = re.exec(l)) !== null) {
+      const script = m[1], sub = m[2].replace(/\s+/, ' ');
+      const table = usage[script];
+      if (!table) { bad.push(`${at}: runs ${script}, which this skill does not ship`); continue; }
+      if (!table[sub]) { bad.push(`${at}: ${script} has no subcommand '${sub}'`); continue; }
+      const rest = l.slice(m.index + m[0].length).split('`')[0];
+      for (const o of rest.match(/(?<![\w-])--[a-z][a-z-]*/g) || []) if (!table[sub].has(o)) bad.push(`${at}: ${script} ${sub} has no option ${o}`);
+      if ((sub === 'prompt propose' || (script === 'codex-run.sh' && sub === 'ideas')) && !/(?<![\w-])--root\s/.test(rest)) bad.push(`${at}: ${script} ${sub} without --root`);
+    }
+    if (/`<angle>`/.test(l) && /\bimprovement\b/.test(l)) bad.push(`${at}: the retired improvement angle is listed`);
   });
   if (bad.length) fail(`SKILL.md command lines no longer match the scripts:\n  ${bad.join('\n  ')}`);
-  ok('SKILL.md command lines match the script CLIs (--root, angles)');
+  ok('SKILL.md command lines match the script usage (subcommands, options, --root, angles)');
 }
 
 // Windows: from PowerShell/cmd the first `bash` on PATH is often System32\bash.exe (the WSL

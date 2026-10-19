@@ -63,11 +63,11 @@ failure handling). Read a reference only when the step below says so.
   `docs/security/checklist.md` → `SECURITY.md` → `docs/SECURITY.md` (first hit, ≤3 tool calls).
   If found, it is handed to the **Security** lens (and the Red Team lens under `--redteam`) only.
 - **Run dir** (once, before Pass 1):
-  `d="$(mktemp -d "${TMPDIR:-${TEMP:-/tmp}}/prism-XXXXXX")" && cd "$d" && { pwd -W 2>/dev/null || pwd; }`
-  prints the run's private directory (`mktemp -d` makes it mode 700 with no shared parent; `pwd -W`
-  gives Git Bash a `C:/...` path the agents' Read/Write tools can open). Every Bash call is a fresh
-  shell, so write that printed path literally wherever `<run-dir>` appears below, in commands and
-  in agent prompts. `records.json`, `checked.json`, the Pass 4 files and `prism-report.json` live there.
+  `d="$(mktemp -d "${TMPDIR:-${TEMP:-/tmp}}/prism-XXXXXX")" && (cd "$d" && { pwd -W 2>/dev/null || pwd; })`
+  prints the run's private directory and leaves the working directory alone (`mktemp -d` makes it
+  mode 700 with no shared parent; `pwd -W` gives Git Bash a `C:/...` path the agents' Read/Write
+  tools can open). Shell variables do not survive between Bash calls, so write that printed path
+  literally wherever `<run-dir>` appears below, in commands and in agent prompts. `records.json`, `checked.json`, the Pass 4 files and `prism-report.json` live there.
 
 ### `--diff` mode (change-scoped review)
 
@@ -144,7 +144,9 @@ Then group semantically overlapping findings.
 - A parser `degraded:true` record is infra, not a candidate → "DEGRADED LENSES" note, excluded
   from counts and fingerprinting.
 - Order: agreements first (highest N), then singletons by severity.
-- `--quick` → stop here; report everything as `SUSPECTED` with lens + agreement count.
+- `--quick` → no Pass 2 or 3; report everything as `SUSPECTED` with lens + agreement count. Pass 4
+  still runs, without `<findings>`, when `--include-improvements` is given (and `--no-ideas` is not);
+  otherwise stop here.
 - There is **no auto-confirm path**; same-model agreement caps confidence at MEDIUM.
 
 ---
@@ -234,10 +236,13 @@ handling: `references/ideas.md` (read it only when a step degrades). **Never typ
 hand**: prompts come only from `verify-ideas.js prompt`, and no contract or verdict is edited.
 Ideas never enter defect counts, the action order, degraded lenses or any gate.
 
-- `<repo-root>` = `git rev-parse --show-toplevel` run in the targets' directory, else the targets'
-  common directory (the same root `verify-evidence.js` gets). If that root is your home directory,
-  a drive root or `/`, skip the pass (the gate would accept any file under it as a ground) and
-  report `Ideas: failed (root: <path>)`. Every `prompt propose` call passes it as `--root`.
+- `<repo-root>` = the reviewed repository's root, the same root Pass 2 gave `verify-evidence.js`:
+  `git rev-parse --show-toplevel` in the repository the targets live in, else the targets' common
+  directory. A target inside `<run-dir>` or the temp dir (the `--diff` context file) never decides
+  the root: use the root of the repository it was collected from. If the root is your home
+  directory, a drive root, `/` or the temp dir, skip the pass (the gate would accept any file under
+  it as a ground) and report `Ideas: failed (root: <path>)`. Every `prompt propose` call passes it
+  as `--root`.
 - `<findings>` = `--findings "<run-dir>/checked.json"`, the **final** one. With `--reproduce`,
   write the post-Pass-3 records to `<run-dir>/records.pass3.json`, run
   `node "<this skill dir>/verify-evidence.js" "<run-dir>/records.pass3.json" "<repo-root>" > "<run-dir>/checked.pass3.json"`,

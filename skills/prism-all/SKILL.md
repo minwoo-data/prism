@@ -183,7 +183,7 @@ node "<skill dir>/verify-evidence.js" <run-dir>/records.json "<repo-root>" > <ru
 
 렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"에 답한다 — 엔진마다 아이디어 렌즈당 최대 3개의 근거 있는 대안을 내고, 스크립트가 gate하고, **다른 엔진**이 판정한다. Pass 2/3 뒤에, 코드·설계 대상 모두에서 돈다(`--include-improvements`가 있으면 `--quick`이어도 돈다). 규칙·gate 검사·실패 처리는 `references/ideas.md`(단계가 degraded일 때만 읽는다). **프롬프트를 손으로 쓰지 않는다** — Claude 프롬프트는 `verify-ideas.js prompt`, Codex 프롬프트는 `codex-run.sh ideas|idea-check`(같은 빌더 + preamble)만 만들고, 계약·판정도 손대지 않는다. 아이디어는 결함 카운트·액션 순서·degraded angle·어떤 게이트에도 들어가지 않는다.
 
-- `<repo-root>` = 대상 디렉터리에서 `git rev-parse --show-toplevel`, 아니면 대상들의 공통 디렉터리(`verify-evidence.js`가 받는 것과 같은 루트). 그 루트가 홈·드라이브 루트·`/`이면 Pass 4를 돌리지 않는다(gate가 그 아래 아무 파일이나 근거로 받는다) — `Ideas: failed (root: <경로>)`. `prompt propose`와 `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수).
+- `<repo-root>` = 검토한 저장소의 루트, Pass 2에서 `verify-evidence.js`가 받은 것과 같은 루트: 대상 파일이 있는 저장소에서 `git rev-parse --show-toplevel`, git이 아니면 대상들의 공통 디렉터리. `<run-dir>`이나 임시 폴더에 있는 대상(수집한 diff 컨텍스트 등)은 루트를 정하는 데 쓰지 않는다 — 그 내용을 뽑아 온 저장소의 루트를 쓴다. 루트가 홈·드라이브 루트·`/`·임시 폴더면 Pass 4를 돌리지 않는다(gate가 그 아래 아무 파일이나 근거로 받는다) — `Ideas: failed (root: <경로>)`. `prompt propose`와 `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수).
 - `<findings>` = `--findings <run-dir>/checked.json`, **최종** checked.json. `--reproduce`면 Pass 3 이후 record를 `<run-dir>/records.pass3.json`에 쓰고 `node "<skill dir>/verify-evidence.js" <run-dir>/records.pass3.json "<repo-root>" > <run-dir>/checked.pass3.json`을 돌린 다음, exit 0이고 배열이 비어 있지 않을 때만 그 파일을 `<run-dir>/checked.json`으로 옮긴다. 한 명령에서 같은 파일을 입력이자 출력으로 쓰지 않는다(셸이 먼저 비우고, `verify-evidence.js`는 빈 입력에 `[]`를 낸다). 후보 0건(Pass 2 스킵)이거나 `--quick`이면 `<findings>`를 뺀다.
 - `<targets>` = 렌즈가 읽은 파일마다 `--target <file>` (discovery와 같은 목록).
 - **먼저 초기화**: `<run-dir>`의 이전 Pass 4 산출물(`pass4.claude.*`, `*.gated.json`, `*.checked-ideas.json`, `groups.json`, `ideas.json`)을 지운다(`--artifacts docs`는 같은 폴더를 다시 쓴다). 재시도 때도 Claude 답 파일은 에이전트를 띄우기 직전에 지운다 — 남은 답이 이번 답 행세를 못 하게(`codex-run.sh`는 Codex 쪽을 스스로 비운다).
@@ -225,7 +225,7 @@ node "<skill dir>/verify-evidence.js" <run-dir>/records.json "<repo-root>" > <ru
 PRISM-ALL REPORT — {target} — {timestamp}
 Mode: {default | quick | adversarial} [+reproduce] [+redteam] · Lenses: defect | design {+redteam} ({auto|explicit})
 Engines: Claude {n}/{k} + Codex {n}/{k}{ (degraded: <lenses>)} · Evidence: {claude | codex | both} · Checklist: {path | none}
-Ideas: on (claude+codex){ · degraded: <engines>}{ · checker: same engine, <engine> degraded} | off (--no-ideas | --quick) | failed (<단계>: <사유>)
+Ideas: on (claude+codex){ · proposer degraded: <engines>}{ · unchecked: <engine> ideas}{ · checker: same engine, <engine> degraded} | off (--no-ideas | --quick) | failed (<단계>: <사유>)
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected  (infra-degraded: D)
 
 ## REPRODUCED (실패 시연됨)
@@ -245,7 +245,7 @@ REPRODUCED → SUPPORTED severity 순(chain 먼저). SUSPECTED는 task가 아니
 <`node "<skill dir>/verify-ideas.js" render <run-dir>/ideas.json` 출력 그대로 — 첫 줄이 `## IDEAS (...)` 제목이다. 선택지이지 task가 아니다. off면 없고, failed면 `## IDEAS` 아래 실패 한 줄>
 ```
 
-**리포트는 실제로 돈 것만 주장한다** — 헤더의 `Codex {n}/{k}`·DEGRADED ANGLES는 파서의 `degraded` 플래그에서 생성(`{k}` = 돌린 렌즈셋 크기: defect 5, design 4, `--redteam`이면 +1). Ideas 줄의 degraded·checker는 `ideas.json`의 `meta.degraded_engines`·`meta.check_degraded`와 3단계에서 고른 checker에서. cross-model 라벨은 실제 양쪽이 응답한 렌즈에만. record 스키마·confidence 표: `references/record-v2.md`.
+**리포트는 실제로 돈 것만 주장한다** — 헤더의 `Codex {n}/{k}`·DEGRADED ANGLES는 파서의 `degraded` 플래그에서 생성(`{k}` = 돌린 렌즈셋 크기: defect 5, design 4, `--redteam`이면 +1). Ideas 줄: `proposer degraded` = `ideas.json`의 `meta.degraded_engines`, `unchecked` = `meta.check_degraded`(검사 답을 하나도 못 받은 아이디어를 낸 엔진 — 실패한 checker가 아니다), `checker: same engine`은 3단계에서 고른 checker. cross-model 라벨은 실제 양쪽이 응답한 렌즈에만. record 스키마·confidence 표: `references/record-v2.md`.
 
 `--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-all/<slug>-<run-id>/`, `--artifacts=docs` 시 repo — .gitignore 필수)에 원자적 출력(temp write → validate → rename). 실패 시 인라인 + `json_output: failed`. `findings`·`meta.counts`는 아이디어 pass와 무관하게 그대로이고, 최상위 `ideas`(= `ideas.json`의 `.ideas`)와 `meta.ideas`(= `ideas.json`의 `.meta` + `"ran": true`)를 더한다. pass를 안 돌렸거나 끝내지 못했으면 `"ideas": []`, `meta.ideas` = `{"ran": false, "reason": "--no-ideas" | "--quick" | "failed: <단계>"}`. fingerprint로 런 간 link만 — 이전 REJECTED를 suppress하지 않는다.
 
