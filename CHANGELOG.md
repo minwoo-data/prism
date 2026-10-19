@@ -7,6 +7,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
 Merge gate support for ddaro (S0a, S0b) and one report assembler for the idea pass (S0c).
 Nothing changes for the reviews as they run today except where the idea pass's outcome is
 written: by a script now, in every review skill (prism, prism-all, prism-codex).
