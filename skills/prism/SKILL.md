@@ -339,9 +339,13 @@ gate passes it explicitly too; `--include-improvements` cannot turn Pass 4 on he
    ```
    node "<this skill dir>/assemble-report.js" begin --out "<run-dir>" --repo "<repo-root>" --run-tag <id> --head <sha40> --diff <base>...<head> [--blockers "<file>"] --lenses defect
    ```
-   (a rejudge, `--blockers` without `--diff` or a target: the same line without `--diff`.) Exit 1:
-   stop, do nothing else, show its stderr. A folder that already holds `prism-run.json` is refused:
-   the gate hands out a fresh folder per run, and an interrupted run is not resumed in place.
+   (a rejudge, `--blockers` without `--diff` or a target: the same line without `--diff`.) `<base>`
+   and `<head>` are 40-hex shas: resolve the `--diff` range first (`git merge-base`, `git rev-parse`)
+   and reuse the same string for `finish --range`. Exit 1: stop, do nothing else, show its stderr.
+   A folder that already holds `prism-run.json` is refused: the gate hands out a fresh folder per
+   run, and an interrupted run is not resumed in place. `begin` records the repository, the five
+   angles, the blockers (ids and hash) in `prism-run.json`; `finish` refuses a call that names
+   anything else.
 2. **Pass 1** (not in a rejudge): the lenses are fresh general-purpose agents that get only their
    prompt, never this session (the session that wrote the change must not brief its reviewer).
    Angles: `correctness`, `security`, `state`, `integration`, `testability` (`--lenses=defect`).
@@ -359,14 +363,19 @@ gate passes it explicitly too; `--include-improvements` cannot turn Pass 4 on he
    finding's 1-based position in that angle's parsed `findings` array (not a line number); several
    findings may map to one candidate; a `degraded: true` marker gets no key. `finish` reports the
    findings left unmapped as `meta.unmapped_findings`.
-4. **Pass 2**: add every blocker as a candidate `blocker:<id>` carrying its file, lines, symbol,
+4. **Pass 2**: the Evidence Agent is a fresh general-purpose agent too (only its prompt, never this
+   session). Add every blocker as a candidate `blocker:<id>` carrying its file, lines, symbol,
    claim and original quote. For each, the Evidence Agent answers `SUPPORTED` (still there: quote
-   the current line) or `REJECTED` (fixed: quote the fixed code at that place). The machine check
-   reads the commit, not the tree:
+   the current line) or `REJECTED` (fixed: quote the fixed code at that place). Every record in
+   `records.json`, including the `SUSPECTED (missing: EVIDENCE_PASS_FAILED)` records you write for
+   a failed chunk, carries `candidate_id` byte-equal to a value of `candidates.json` or to
+   `blocker:<id>`; `finish` refuses the whole report otherwise. The machine check reads the commit,
+   not the tree, and writes to a temp name first (a shell redirection would leave an empty file on
+   exit 1):
    ```
-   node "<this skill dir>/verify-evidence.js" "<run-dir>/records.json" "<repo-root>" --rev <sha40> > "<run-dir>/checked.json"
+   node "<this skill dir>/verify-evidence.js" "<run-dir>/records.json" "<repo-root>" --rev <sha40> > "<run-dir>/checked.tmp.json" && mv "<run-dir>/checked.tmp.json" "<run-dir>/checked.json"
    ```
-   Exit 1: `checked.json` is not written; stop and report `Report: failed (verify-evidence: <stderr>)`.
+   Exit 1: `checked.json` does not exist; stop and report `Report: failed (verify-evidence: <stderr>)`.
 5. **Rejudge** (`--blockers` without `--diff` or a target): skip Pass 1 and triage; Pass 2 runs on
    the blocker candidates only; `meta.range` is null. The "no argument → whole project" rule does
    not apply.

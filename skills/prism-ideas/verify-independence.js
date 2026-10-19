@@ -134,11 +134,14 @@ function checkSkillCommands() {
       if (!table) { bad.push(`${at}: runs ${script}, which this skill does not ship`); continue; }
       if (!table[sub]) { bad.push(`${at}: ${script} has no subcommand '${sub}'`); continue; }
       const rest = (s ? after.slice(s[0].length) : after).split('`')[0];
-      for (const o of rest.match(/(?<![\w-])--[a-z][a-z-]*/g) || []) if (!table[sub].has(o)) bad.push(`${at}: ${script} ${sub || '(positional form)'} has no option ${o}`);
+      for (const o of rest.match(/(?<![\w-])--[a-z][a-z-]*=?/g) || []) {
+        if (o.endsWith('=')) { bad.push(`${at}: ${script} ${sub || '(positional form)'}: write ${o.slice(0, -1)} <value>, the scripts do not take --option=value`); continue; }
+        if (!table[sub].has(o)) bad.push(`${at}: ${script} ${sub || '(positional form)'} has no option ${o}`);
+      }
       if ((sub === 'prompt propose' || (script === 'codex-run.sh' && sub === 'ideas')) && !/(?<![\w-])--root\s/.test(rest)) bad.push(`${at}: ${script} ${sub} without --root`);
     }
     if (/`<angle>`/.test(l) && /\bimprovement\b/.test(l)) bad.push(`${at}: the retired improvement angle is listed`);
-    if (/\$RUN\b/.test(l)) bad.push(`${at}: uses the $RUN shell variable (write the run dir literally)`);
+    if (/\$\{?RUN\b/.test(l)) bad.push(`${at}: uses the $RUN shell variable (write the run dir literally)`);
   });
   if (bad.length) fail(`SKILL.md command lines no longer match the scripts:\n  ${bad.join('\n  ')}`);
   ok('SKILL.md command lines match the script usage (subcommands, options, --root, angles, no $RUN)');

@@ -57,7 +57,7 @@ const BEGIN = '<<<PRISM-FINDINGS v1>>>';
 const END = '<<<END>>>';
 const ch = (c) => String.fromCharCode(c);
 // Same zero-width set parse-findings.js strips before comparing a fence token.
-const ZW = new RegExp('[' + ch(0x200B) + '-' + ch(0x200F) + ch(0x202A) + '-' + ch(0x202E) + ch(0x2060) + '-' + ch(0x2069) + ch(0xFEFF) + ch(0x00AD) + ']', 'g');
+const ZW = new RegExp('[' + ch(0x200B) + '-' + ch(0x200F) + ch(0x202A) + '-' + ch(0x202E) + ch(0x2060) + '-' + ch(0x2064) + ch(0xFEFF) + ch(0x00AD) + ']', 'g');
 const NL = new RegExp('\\r\\n|\\n|\\r|' + ch(0x2028) + '|' + ch(0x2029));   // U+2028/2029 never raw in this source
 const tok = (s) => s.replace(ZW, '').trim();
 
@@ -66,28 +66,50 @@ const refuse = (m) => { throw new Refuse(m); };
 
 // ---------------------------------------------------------------- helpers
 
-// git reads the repository named by -C, never one a surrounding hook or shell exported (same
-// rule as verify-evidence.js --rev), and never hangs the gate.
-const GIT_ENV_OVERRIDES = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'];
+// git reads the repository named by -C with the repository's own configuration: the GIT_DIR
+// family and the GIT_CONFIG_* family a surrounding hook or shell exported are dropped, fsmonitor
+// and hooks are off (same rule as verify-evidence.js --rev), and a child never hangs the gate.
+const GIT_ENV_OVERRIDES = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'];
 function gitEnv() {
   const env = Object.assign({}, process.env);
-  for (const k of GIT_ENV_OVERRIDES) delete env[k];
+  for (const k of Object.keys(env)) if (GIT_ENV_OVERRIDES.indexOf(k) !== -1 || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
   return env;
 }
-function git(repo, args) {
-  return execFileSync('git', ['-C', repo].concat(args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 60000, env: gitEnv() });
+const GIT_SAFE = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat'];
+// {out} on exit 0; refuses with git's own words on a non-zero exit; refuses as "git did not
+// complete" for a child that did not run to the end (missing git, timeout, signal).
+function git(repo, args, what) {
+  try {
+    return execFileSync('git', ['-C', repo].concat(GIT_SAFE, args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 60000, env: gitEnv() });
+  } catch (e) {
+    if (e && typeof e.status === 'number' && !e.signal && e.code !== 'ENOBUFS') refuse(`${what || `git ${args[0]}`} failed in ${repo}: ${String(e.stderr || '').trim().split(/\r?\n/)[0] || `exit ${e.status}`}`);
+    refuse(`git ${args[0]} did not complete in ${repo}: ${e && (e.code || e.signal || e.message)} (is git installed and on PATH?)`);
+  }
 }
+// One snapshot of the reviewed tree: HEAD and the tracked changes come from a single git call
+// (`status --porcelain=v2 --branch`), so a commit cannot slip between the two readings. The
+// reflog length tells whether HEAD moved at all since begin, even when it was moved back.
 function repoState(repo) {
-  let top, head, dirty;
-  try { top = git(repo, ['rev-parse', '--show-toplevel']).trim(); } catch (_) { refuse(`not a git work tree: ${repo}`); }
-  try { head = git(repo, ['rev-parse', 'HEAD']).trim(); } catch (_) { refuse(`cannot read HEAD in ${repo}`); }
-  try { dirty = git(repo, ['status', '--porcelain', '--untracked-files=no']).split(NL).filter(Boolean); }
-  catch (_) { refuse(`cannot read the status of ${repo}`); }
-  return { top, head, dirty };
+  const top = git(repo, ['rev-parse', '--show-toplevel'], 'not a git work tree').trim();
+  const lines = git(repo, ['status', '--porcelain=v2', '--branch', '--untracked-files=no'], 'git status').split(NL).filter(Boolean);
+  const oid = lines.find((l) => l.startsWith('# branch.oid '));
+  const head = oid ? oid.slice('# branch.oid '.length).trim() : '';
+  if (!/^[0-9a-f]{40,64}$/.test(head)) refuse(`cannot read HEAD in ${repo} (${head || 'unborn branch'})`);
+  const dirty = lines.filter((l) => !l.startsWith('#'));
+  let reflog = 0;
+  try { reflog = git(repo, ['rev-list', '-g', 'HEAD', '--count']).trim(); } catch (_) { reflog = null; }
+  return { top, head, dirty, reflog: reflog === null ? null : Number(reflog) };
 }
 function isCommit(repo, sha) {
-  try { return git(repo, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]).trim() === sha; } catch (_) { return false; }
+  try {
+    return execFileSync('git', ['-C', repo].concat(GIT_SAFE, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 60000, env: gitEnv() }).trim() === sha;
+  } catch (e) {
+    if (e && e.status === 1 && !e.signal) return false;
+    refuse(`git rev-parse did not complete in ${repo}: ${e && (e.code || e.signal || String(e.stderr || '').trim() || e.message)}`);
+  }
 }
+const sha256 = (s) => require('crypto').createHash('sha256').update(s).digest('hex');
+const OS_DROPPINGS = new Set(['desktop.ini', 'Thumbs.db', '.DS_Store']);
 
 function readText(file, what) {
   try { return fs.readFileSync(file, 'utf8'); } catch (_) { refuse(`cannot read ${what}: ${file}`); }
@@ -109,9 +131,12 @@ function pluginVersion() {
 }
 
 // A blockers file: an array of objects with a unique id, a file and a claim (what the gate carries
-// over from an earlier run). Returns the parsed array.
+// over from an earlier run). Returns the parsed array; `.sha256` is the hash of the file bytes.
 function readBlockers(file) {
-  const arr = readJson(file, 'blockers file');
+  const bytes = readText(file, 'blockers file');
+  let arr;
+  try { arr = JSON.parse(bytes); } catch (_) { refuse(`blockers file is not JSON: ${file}`); }
+  Object.defineProperty(arr, 'sha256', { value: sha256(bytes), enumerable: false });
   if (!Array.isArray(arr)) refuse(`blockers file is not a JSON array: ${file}`);
   const seen = new Set();
   arr.forEach((b, i) => {
@@ -178,9 +203,15 @@ function begin(args) {
   let st = null;
   try { st = fs.statSync(out); } catch (_) { st = null; }
   if (!st || !st.isDirectory()) refuse(`--out is not an existing directory: ${out}`);
-  const extra = fs.readdirSync(out).filter((n) => n !== BLOCKERS_FILE);
+  const entries = fs.readdirSync(out);
+  const extra = entries.filter((n) => n !== BLOCKERS_FILE && !OS_DROPPINGS.has(n));
   if (extra.indexOf(RUN_FILE) !== -1) refuse(`${RUN_FILE} already exists in ${out}: another run owns this folder (or a run was interrupted). Take a fresh run folder.`);
   if (extra.length) refuse(`--out must hold nothing but ${BLOCKERS_FILE}; found: ${extra.slice(0, 5).join(', ')}${extra.length > 5 ? ', ...' : ''}. Take a fresh run folder.`);
+  // The report is published with a hard link: refuse now, not at finish, where the folder cannot take one.
+  const probe = path.join(out, `.link-probe-${process.pid}`);
+  try { fs.writeFileSync(probe, '', { flag: 'wx' }); fs.linkSync(probe, probe + '.l'); fs.unlinkSync(probe + '.l'); }
+  catch (e) { try { fs.unlinkSync(probe + '.l'); } catch (_) { /* none */ } try { fs.unlinkSync(probe); } catch (_) { /* none */ } refuse(`--out must be on a filesystem that supports hard links (the report is published with one): ${e && e.code}`); }
+  try { fs.unlinkSync(probe); } catch (_) { /* none */ }
 
   const repo = path.resolve(o['--repo']);
   const s = repoState(repo);
@@ -188,12 +219,19 @@ function begin(args) {
   if (s.dirty.length) refuse(`tracked files changed in ${repo}: ${s.dirty.slice(0, 3).join('; ')}${s.dirty.length > 3 ? '; ...' : ''}`);
   let range = null, base = null;
   if (scope === 'diff' && o['--diff'] !== true) ({ range, base } = checkRange(repo, o['--diff'], o['--head']));
+  // A blockers.json the gate put in the folder must be the one this run re-judges.
+  const inFolder = entries.indexOf(BLOCKERS_FILE) !== -1 ? path.join(out, BLOCKERS_FILE) : null;
+  if (inFolder && (!('--blockers' in o) || path.resolve(o['--blockers']) !== inFolder)) refuse(`${out} holds ${BLOCKERS_FILE}; pass it as --blockers "${inFolder}" (or take a fresh folder)`);
   const blockers = '--blockers' in o ? readBlockers(path.resolve(o['--blockers'])) : null;
   if (scope === 'rejudge' && !blockers.length) refuse('a rejudge needs at least one blocker');
 
   const run = {
     kind: 'prism-run', prism_version: pluginVersion(), report_contract: contract, run_tag: o['--run-tag'],
-    head: o['--head'], scope, base, range, repo: s.top, blockers: blockers ? blockers.length : null,
+    head: o['--head'], scope, base, range, repo: s.top, reflog: s.reflog,
+    lenses: scope === 'diff' ? DEFECT.slice() : [],
+    blockers: blockers ? blockers.length : null,
+    blocker_ids: blockers ? blockers.map((b) => b.id).sort() : null,
+    blockers_sha256: blockers ? blockers.sha256 : null,
     started: new Date().toISOString(),
   };
   const file = path.join(out, RUN_FILE);
@@ -207,13 +245,26 @@ function begin(args) {
 
 // ---------------------------------------------------------------- finish
 
-// Every BEGIN line of a lens answer must be followed (later) by an END line.
+// Every BEGIN line of a lens answer must be closed by an END line before the next BEGIN (and before
+// the end of the file).
 function fencesClosed(text) {
-  let lastBegin = -1, lastEnd = -1;
-  text.split(NL).forEach((l, i) => { const t = tok(l); if (t === BEGIN) lastBegin = i; else if (t === END) lastEnd = i; });
-  return lastBegin === -1 || lastEnd > lastBegin;
+  let open = false;
+  for (const l of text.split(NL)) {
+    const t = tok(l);
+    if (t === BEGIN) { if (open) return false; open = true; } else if (t === END) open = false;
+  }
+  return !open;
 }
 
+// The parse output is taken from parse-findings.js itself, run again on the answer file: a stale
+// or fabricated .txt.json next to the answer is refused.
+const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x)) ? Object.keys(x).sort().reduce((a, kk) => { a[kk] = x[kk]; return a; }, {}) : x);
+function parseAgain(txtFile, angle) {
+  try {
+    return JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'parse-findings.js'), txtFile, angle], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 60000 }));
+  } catch (e) { refuse(`parse-findings.js could not parse ${txtFile}: ${e && (e.code || e.message)}`); }
+}
+const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
 function readLens(out, angle) {
   const txtFile = path.join(out, `pass1.claude.${angle}.txt`);
   const text = readText(txtFile, `lens answer for ${angle}`);
@@ -222,27 +273,39 @@ function readLens(out, angle) {
       typeof parsed.degraded !== 'boolean' || typeof parsed.skipped !== 'number' || typeof parsed.overflow !== 'number') {
     refuse(`parse-findings output for ${angle} has the wrong shape: ${txtFile}.json`);
   }
+  if (canon(parseAgain(txtFile, angle)) !== canon(parsed)) refuse(`parse-findings output for ${angle} does not match its answer file (stale or edited): ${txtFile}.json`);
   const reasons = [];
-  const fb = /^\[fallback: ([^\]]+)\]$/.exec(text.trim());
+  const fb = /^\[fallback: ([^\]\u0000-\u001F\u007F]+)\]$/.exec(text.trim());
   if (fb) reasons.push(`fallback: ${fb[1]}`);
-  else if (parsed.degraded) reasons.push(String((parsed.findings[0] && parsed.findings[0].text) || 'degraded').replace(/^ANGLE-DEGRADED:\s*/, ''));
+  else if (parsed.degraded) reasons.push(String((parsed.findings[0] && parsed.findings[0].text) || 'degraded').replace(/^ANGLE-DEGRADED:\s*/, '').replace(CONTROL, ' '));
   if (parsed.skipped > 0) reasons.push(`skipped ${parsed.skipped}`);
   if (parsed.overflow > 0) reasons.push(`overflow ${parsed.overflow}`);
+  if (parsed.blocks > 1) reasons.push(`blocks ${parsed.blocks}`);
   if (!fencesClosed(text)) reasons.push('unclosed');
   return { angle, parsed, complete: reasons.length === 0, reason: reasons.join(', ') };
 }
 
-function readChecked(out, candidateIds) {
+// checked.json must be what `verify-evidence.js --rev <head>` wrote: every record carries a
+// `_evidence_check` with the rev stamp, one record per candidate, and the fields the gate reads.
+function readChecked(out, candidateIds, head) {
   const file = path.join(out, 'checked.json');
   const text = readText(file, 'checked.json');
   if (text.trim() === '') refuse(`checked.json is empty (not even []): ${file}`);
   let arr;
   try { arr = JSON.parse(text); } catch (_) { refuse(`checked.json is not JSON: ${file}`); }
   if (!Array.isArray(arr)) refuse(`checked.json is not a JSON array: ${file}`);
+  const seen = new Set();
   arr.forEach((r, i) => {
     if (!r || typeof r !== 'object' || Array.isArray(r)) refuse(`checked.json[${i}] is not a record`);
     if (typeof r.candidate_id !== 'string' || !candidateIds.has(r.candidate_id)) refuse(`checked.json[${i}] names candidate_id ${JSON.stringify(r.candidate_id)}, which this run never had`);
+    if (seen.has(r.candidate_id)) refuse(`checked.json repeats candidate_id ${JSON.stringify(r.candidate_id)}`);
+    seen.add(r.candidate_id);
     if (!STATUSES.has(r.status)) refuse(`checked.json[${i}] (${r.candidate_id}) has status ${JSON.stringify(r.status)}`);
+    if (typeof r.claim !== 'string' || !r.claim) refuse(`checked.json[${i}] (${r.candidate_id}) has no claim`);
+    if (!(r.file === null || typeof r.file === 'string')) refuse(`checked.json[${i}] (${r.candidate_id}) has no file (string or null)`);
+    const ec = r._evidence_check;
+    if (!ec || typeof ec !== 'object' || typeof ec.checked !== 'boolean' || ec.rev !== head) refuse(`checked.json[${i}] (${r.candidate_id}) was not written by verify-evidence.js --rev ${head} (no _evidence_check.rev stamp)`);
+    if (ec.checked && !Array.isArray(ec.quote_lines)) refuse(`checked.json[${i}] (${r.candidate_id}) has a quote check without quote_lines`);
   });
   return arr;
 }
@@ -256,19 +319,36 @@ function groundingFailed(r) {
 
 function ideasOff(reason) { return { ran: false, reason }; }
 
-function publish(out, text) {
+// A prism-report.json that exists before this finish publishes was not written by this finish (a
+// planted file, or a second finish): it is moved aside so the folder holds no report, and the
+// finish is refused. The gate then sees "no report", never a forgery.
+function quarantine(out, final) {
+  const aside = path.join(out, `${REPORT_FILE}.refused-${Date.now().toString(36)}`);
+  try { fs.renameSync(final, aside); } catch (e) { refuse(`${REPORT_FILE} already exists in ${out} and could not be moved aside: ${e && e.code}`); }
+  refuse(`${REPORT_FILE} already existed in ${out} (not written by this finish): moved to ${path.basename(aside)}; the folder now holds no report`);
+}
+function publish(out, text, runFile, run) {
   const final = path.join(out, REPORT_FILE);
+  if (fs.existsSync(final)) quarantine(out, final);
   const tmp = path.join(out, `${REPORT_FILE}.tmp-${process.pid}-${Date.now().toString(36)}`);
   const fd = fs.openSync(tmp, 'wx');
-  try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  if (process.env.PRISM_ASSEMBLE_TEST_STOP === 'before-link') { process.stderr.write('[assemble-report] test stop before link\n'); process.exit(3); }
+  try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); }
+  catch (e) { try { fs.closeSync(fd); } catch (_) { /* closed */ } try { fs.unlinkSync(tmp); } catch (_) { /* gone */ } refuse(`cannot write ${tmp}: ${e && (e.code || e.message)}`); }
+  fs.closeSync(fd);
+  // selftest-only stop (the selftest marks its own child processes; a stray variable elsewhere is ignored)
+  if (process.env.PRISM_ASSEMBLE_TEST_STOP === 'before-link' && process.env.PRISM_ASSEMBLE_SELFTEST === out) { process.stderr.write('[assemble-report] selftest stop before link\n'); process.exit(3); }
   try { fs.linkSync(tmp, final); }
   catch (e) {
     try { fs.unlinkSync(tmp); } catch (_) { /* leave it */ }
-    if (e && e.code === 'EEXIST') refuse(`${REPORT_FILE} already exists in ${out}: a run publishes once`);
+    if (e && e.code === 'EEXIST') quarantine(out, final);
     refuse(`cannot publish ${final}: ${e && e.message}`);
   }
   try { fs.unlinkSync(tmp); } catch (_) { /* the link holds the content */ }
+  // prism-run.json records what was published, so a consumer can tell this report from any other file.
+  const done = Object.assign({}, run, { finished: new Date().toISOString(), report_sha256: sha256(text) });
+  const runTmp = runFile + `.tmp-${process.pid}`;
+  try { fs.writeFileSync(runTmp, JSON.stringify(done, null, 2) + '\n'); fs.renameSync(runTmp, runFile); }
+  catch (e) { try { fs.unlinkSync(runTmp); } catch (_) { /* gone */ } refuse(`report published at ${final} but ${RUN_FILE} could not record it: ${e && (e.code || e.message)}`); }
   return final;
 }
 
@@ -281,12 +361,15 @@ function finish(args) {
   const out = path.resolve(o['--out']);
   const repo = path.resolve(o['--repo']);
 
-  const run = readJson(path.join(out, RUN_FILE), RUN_FILE);
+  const runFile = path.join(out, RUN_FILE);
+  const run = readJson(runFile, RUN_FILE);
   if (!run || run.kind !== 'prism-run') refuse(`${RUN_FILE} is not a prism run file`);
   if (run.run_tag !== o['--run-tag'] || run.head !== o['--head']) refuse(`${RUN_FILE} belongs to run_tag=${run.run_tag} head=${run.head}, not this finish`);
   if (run.report_contract !== contract) refuse(`${RUN_FILE} was begun under report contract ${run.report_contract}, this script writes ${contract}`);
+  if (run.finished) refuse(`${RUN_FILE} says this run already published a report (${run.finished}): a run publishes once`);
   const scope = run.scope;
   if (scope !== 'diff' && scope !== 'rejudge') refuse(`${RUN_FILE} has an unknown scope: ${scope}`);
+  if (typeof run.repo !== 'string' || !Array.isArray(run.lenses)) refuse(`${RUN_FILE} was written by an older begin (no repo or lenses): take a fresh run folder`);
 
   let lenses = [], range = null, base = null;
   if (scope === 'diff') {
@@ -295,16 +378,19 @@ function finish(args) {
     if (run.range && run.range !== range) refuse(`begin saw range ${run.range}, finish got ${range}`);
     lenses = o['--lenses'].split(',').map((s) => s.trim()).filter(Boolean);
     if (!lenses.length) refuse('--lenses is empty');
+    if (lenses.slice().sort().join() !== run.lenses.slice().sort().join()) refuse(`begin recorded lenses ${run.lenses.join(',')}, finish got ${lenses.join(',')}`);
   } else {
     if ('--range' in o || '--lenses' in o) refuse('a rejudge has no --range and no --lenses');
     if (!('--blockers' in o)) refuse('a rejudge needs --blockers');
   }
   const lens_set = lenses.length ? lensSet(lenses) : 'defect';
+  if (lens_set !== 'defect') refuse('a gate run uses the defect lens set only');
   const blockers = '--blockers' in o ? readBlockers(path.resolve(o['--blockers'])) : [];
   if (run.blockers != null && run.blockers !== blockers.length) refuse(`begin saw ${run.blockers} blockers, finish got ${blockers.length}`);
   if (run.blockers == null && blockers.length) refuse('begin saw no blockers file, finish got one');
+  if (run.blockers != null && (run.blockers_sha256 !== blockers.sha256 || JSON.stringify(run.blocker_ids) !== JSON.stringify(blockers.map((b) => b.id).sort()))) refuse('the blockers file differs from the one begin saw (edited or replaced); take a fresh run folder');
   const timestamp = '--timestamp' in o ? o['--timestamp'] : new Date().toISOString();
-  if (!/^\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:\d{2})$/.test(timestamp)) refuse(`--timestamp is not an ISO 8601 instant: ${timestamp}`);
+  if (!/^\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:\d{2})$/.test(timestamp) || isNaN(Date.parse(timestamp))) refuse(`--timestamp is not an ISO 8601 instant: ${timestamp}`);
 
   // Pass 1: every requested lens, its parse output, and the candidate map.
   const lensInfo = lenses.map((a) => readLens(out, a));
@@ -316,7 +402,7 @@ function finish(args) {
     const cand = readJson(path.join(out, 'candidates.json'), 'candidates.json');
     if (!cand || typeof cand !== 'object' || Array.isArray(cand)) refuse('candidates.json must be an object {lens_finding_id: candidate_id}');
     for (const k of Object.keys(cand)) {
-      if (!findingIds.has(k)) refuse(`candidates.json maps ${k}, which no lens produced (degraded markers and skipped lines have no id)`);
+      if (!findingIds.has(k)) refuse(`candidates.json maps ${JSON.stringify(k)}, which no lens produced (degraded markers and skipped lines have no id)`);
       const v = cand[k];
       if (typeof v !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(v) || v.startsWith('blocker:')) refuse(`candidates.json: ${k} maps to an invalid candidate id ${JSON.stringify(v)}`);
       candidateIds.add(v);
@@ -326,13 +412,15 @@ function finish(args) {
   for (const b of blockers) candidateIds.add(`blocker:${b.id}`);
 
   // Pass 2: the final checked.json is the only source of records and counts.
-  const records = readChecked(out, candidateIds).map((r) => Object.assign({}, r, { grounding_failed: groundingFailed(r) }));
+  const records = readChecked(out, candidateIds, o['--head']).map((r) => Object.assign({}, r, { grounding_failed: groundingFailed(r) }));
   const counts = { records: records.length, supported: 0, reproduced: 0, suspected: 0, rejected: 0 };
   for (const r of records) counts[r.status.toLowerCase()]++;
 
-  // The tree now, against the head the run reviewed.
+  // The tree now, against the head the run reviewed, in the work tree begin saw. HEAD that moved
+  // and came back shows as a longer reflog (not detectable when the reflog is off).
   const s = repoState(repo);
-  const tree_changed = s.head !== o['--head'] || s.dirty.length > 0;
+  if (s.top !== run.repo) refuse(`begin ran in ${run.repo}, finish got ${s.top}`);
+  const tree_changed = s.head !== o['--head'] || s.dirty.length > 0 || (run.reflog != null && s.reflog != null && s.reflog !== run.reflog);
 
   const degraded_angles = lensInfo.filter((li) => !li.complete).map((li) => ({ angle: li.angle, reason: li.reason }));
   const report = {
@@ -363,7 +451,7 @@ function finish(args) {
     findings: records,
     ideas: [],
   };
-  const file = publish(out, JSON.stringify(report, null, 2) + '\n');
+  const file = publish(out, JSON.stringify(report, null, 2) + '\n', runFile, run);
   return `finish ok: ${file} records=${counts.records} supported=${counts.supported} reproduced=${counts.reproduced} rejected=${counts.rejected} suspected=${counts.suspected} lenses_completed=${report.meta.lenses_completed.length}/${lenses.length} tree_changed=${tree_changed}${unmapped.length ? ` unmapped=${unmapped.length}` : ''}`;
 }
 
@@ -384,11 +472,13 @@ function selftest() {
     fs.copyFileSync(path.join(__dirname, 'parse-findings.js'), path.join(d, 'parse-findings.js'));
   }
   fs.writeFileSync(path.join(skill, 'report-contract.json'), '{"report_contract": "2"}\n');
+  let lastStderr = '';
   const cli = (dir, args, env) => {
     try {
       const stdout = execFileSync(process.execPath, [path.join(dir, 'assemble-report.js')].concat(args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: Object.assign({}, process.env, env || {}) });
+      lastStderr = '';
       return { code: 0, stdout, stderr: '' };
-    } catch (e) { return { code: e.status, stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }; }
+    } catch (e) { lastStderr = String(e.stderr || ''); return { code: e.status, stdout: String(e.stdout || ''), stderr: lastStderr }; }
   };
   const ok = (r) => r.code === 0;
   const refused = (r, re) => r.code === 1 && r.stdout === '' && re.test(r.stderr);
@@ -416,7 +506,7 @@ function selftest() {
   const GOOD = (sev, locus, text) => `thinking...\n${BEGIN}\n${sev} | ${locus} | ${text} -> fix\n${END}\n`;
   const CLEAN = `nothing found\n${BEGIN}\n${END}\n`;
   const ALL = DEFECT.join(',');
-  const rec = (cid, status, extra) => Object.assign({ id: 'PRISM-00' + cid.replace(/\D/g, ''), candidate_id: cid, file: 'auth.py', lines: '3-4', symbol: 'reset_password', category: 'security', severity: 'HIGH', status, claim: 'Reset token can be reused', evidence: ['auth.py:4 — token record remains active after successful update'], confidence: { label: 'HIGH', evidence_strength: 'MEDIUM' }, reproduction: { status: 'NOT_RUN' }, _evidence_check: { checked: true, quote_found: true, matched_lines: '1-5', quote_lines: [4], note: 'verified' } }, extra || {});
+  const rec = (cid, status, extra) => Object.assign({ id: 'PRISM-00' + cid.replace(/\D/g, ''), candidate_id: cid, file: 'auth.py', lines: '3-4', symbol: 'reset_password', category: 'security', severity: 'HIGH', status, claim: 'Reset token can be reused', evidence: ['auth.py:4 — token record remains active after successful update'], confidence: { label: 'HIGH', evidence_strength: 'MEDIUM' }, reproduction: { status: 'NOT_RUN' }, _evidence_check: { checked: true, quote_found: true, matched_lines: '1-5', quote_lines: [4], note: 'verified', rev: head } }, extra || {});
   const setup = (out, opts) => {
     opts = opts || {};
     lens(out, 'correctness', GOOD('HIGH', 'auth.py:3@reset_password', 'token reused'));
@@ -427,7 +517,10 @@ function selftest() {
     fs.writeFileSync(path.join(out, 'candidates.json'), JSON.stringify(opts.candidates || { 'correctness#1': 'c1', 'security#1': 'c1' }));
     if (opts.checked !== null) fs.writeFileSync(path.join(out, 'checked.json'), opts.checked === undefined ? JSON.stringify([rec('c1', 'SUPPORTED')]) : opts.checked);
   };
-  const readReport = (out) => JSON.parse(fs.readFileSync(path.join(out, REPORT_FILE), 'utf8'));
+  const readReport = (out) => {
+    if (!fs.existsSync(path.join(out, REPORT_FILE))) throw new Error(`no report in ${out}; the last CLI call said: ${lastStderr.trim()}`);
+    return JSON.parse(fs.readFileSync(path.join(out, REPORT_FILE), 'utf8'));
+  };
 
   // ---- begin
   let out = newOut();
@@ -502,10 +595,15 @@ function selftest() {
   const { spawn } = require('child_process');
   const race = () => new Promise((resolve) => {
     const args = [path.join(skill, 'assemble-report.js'), 'begin'].concat(common(out), ['--diff', range]);
-    let left = 2; const codes = [];
+    let left = 2; const codes = [], errs = [];
+    const timer = setTimeout(() => { if (left > 0) { left = 0; resolve({ codes: codes.concat(['timeout']), errs }); } }, 60000);
+    const done = () => { if (--left === 0) { clearTimeout(timer); resolve({ codes, errs }); } };
     for (let i = 0; i < 2; i++) {
-      const p = spawn(process.execPath, args, { stdio: 'ignore', windowsHide: true });
-      p.on('exit', (code) => { codes.push(code); if (--left === 0) resolve(codes); });
+      const p = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+      let err = '';
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('error', (e) => { codes.push(-1); errs.push(String(e)); done(); });
+      p.on('exit', (code) => { codes.push(code); errs.push(err); done(); });
     }
   });
 
@@ -525,7 +623,7 @@ function selftest() {
     t('finish: records carry grounding_failed (false for a verified quote)', rep.findings[0].grounding_failed === false && rep.findings[0].candidate_id === 'c1');
     t('finish: no temp file is left behind', fs.readdirSync(out).filter((f) => f.startsWith(REPORT_FILE + '.tmp')).length === 0);
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
-    t('finish: a second report in the same folder is refused', refused(r, /already exists/));
+    t('finish: a second finish in the same folder is refused', refused(r, /already published a report|already exist/));
     const bytes1 = fs.readFileSync(path.join(out, REPORT_FILE), 'utf8');
     // determinism: the same inputs in a fresh folder give the same bytes (timestamp pinned)
     const out2 = newOut();
@@ -543,7 +641,7 @@ function selftest() {
 
     // valid + malformed lines in one lens: finding kept, lens not completed
     out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
-    setup(out, { testability: `${BEGIN}\nMED | auth.py:5 | silent return -> log\n**HIGH** | bold sev | dropped -> x\n${END}\n`, candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'testability#1': 'c2' }, checked: JSON.stringify([rec('c1', 'SUPPORTED'), rec('c2', 'SUSPECTED', { missing: 'EVIDENCE_QUOTE_MISMATCH', _evidence_check: { checked: true, quote_found: false, note: 'EVIDENCE_QUOTE_MISMATCH' } })]) });
+    setup(out, { testability: `${BEGIN}\nMED | auth.py:5 | silent return -> log\n**HIGH** | bold sev | dropped -> x\n${END}\n`, candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'testability#1': 'c2' }, checked: JSON.stringify([rec('c1', 'SUPPORTED'), rec('c2', 'SUSPECTED', { missing: 'EVIDENCE_QUOTE_MISMATCH', _evidence_check: { checked: true, quote_found: false, quote_lines: [], note: 'EVIDENCE_QUOTE_MISMATCH', rev: head } })]) });
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
     rep = readReport(out);
     t('finish: a skipped line makes the lens incomplete (skipped 1) while its valid finding stays a candidate', ok(r) && rep.meta.lenses_completed.indexOf('testability') === -1 && rep.meta.degraded_angles[0].reason === 'skipped 1' && JSON.stringify(rep.meta.candidate_ids) === '["c1","c2"]');
@@ -551,7 +649,7 @@ function selftest() {
 
     // an unclosed fence
     out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
-    setup(out, { integration: `${BEGIN}\nLOW | auth.py:1 | caller unknown -> ask\n`, candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'integration#1': 'c3' }, checked: JSON.stringify([rec('c1', 'SUPPORTED'), rec('c3', 'SUSPECTED', { missing: 'EVIDENCE_PASS_FAILED', _evidence_check: { checked: false, note: 'status not grounded — no quote check' } })]) });
+    setup(out, { integration: `${BEGIN}\nLOW | auth.py:1 | caller unknown -> ask\n`, candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'integration#1': 'c3' }, checked: JSON.stringify([rec('c1', 'SUPPORTED'), rec('c3', 'SUSPECTED', { missing: 'EVIDENCE_PASS_FAILED', _evidence_check: { checked: false, note: 'status not grounded — no quote check', rev: head } })]) });
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
     rep = readReport(out);
     t('finish: an unclosed fence makes the lens incomplete (unclosed); the parsed finding stays', ok(r) && rep.meta.degraded_angles.length === 1 && rep.meta.degraded_angles[0].reason === 'unclosed' && rep.meta.candidate_ids.indexOf('c3') !== -1);
@@ -559,7 +657,7 @@ function selftest() {
 
     // free-text `missing` is never parsed for codes
     out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
-    setup(out, { checked: JSON.stringify([rec('c1', 'SUSPECTED', { missing: 'EVIDENCE_PASS_FAILED on the second try (EVIDENCE_QUOTE_MISMATCH)', _evidence_check: { checked: false, note: 'x' } })]) });
+    setup(out, { checked: JSON.stringify([rec('c1', 'SUSPECTED', { missing: 'EVIDENCE_PASS_FAILED on the second try (EVIDENCE_QUOTE_MISMATCH)', _evidence_check: { checked: false, note: 'x', rev: head } })]) });
     cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
     t('finish: missing text that merely contains a code is not grounding_failed', readReport(out).findings[0].grounding_failed === false);
 
@@ -571,7 +669,7 @@ function selftest() {
     out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
     setup(out, { candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'state#1': 'c9' } });
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
-    t('finish: a candidates.json key no lens produced -> exit 1, no report', refused(r, /maps state#1, which no lens produced/) && !fs.existsSync(path.join(out, REPORT_FILE)));
+    t('finish: a candidates.json key no lens produced -> exit 1, no report', refused(r, /maps "state#1", which no lens produced/) && !fs.existsSync(path.join(out, REPORT_FILE)));
     out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
     setup(out, { state: '[fallback: claude-unavailable]\n', candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'state#1': 'c9' } });
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
@@ -612,7 +710,9 @@ function selftest() {
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
     t('finish: a missing lens answer -> exit 1', refused(r, /cannot read lens answer for state/));
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', 'correctness,security']));
-    t('finish: only the requested lenses are read', ok(r) && readReport(out).meta.lenses_requested.length === 2);
+    t('finish: a subset of the lenses begin recorded is refused (a failed lens cannot be dropped)', refused(r, /begin recorded lenses/));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', 'conflict,claim-accuracy,devil,robustness']));
+    t('finish: the design lens set is refused', refused(r, /begin recorded lenses|defect lens set only/));
     out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
     setup(out); fs.unlinkSync(path.join(out, 'candidates.json'));
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
@@ -626,9 +726,9 @@ function selftest() {
     r = cli(skill, ['finish'].concat(common(out), ['--range', range]));
     t('finish: a diff run without --lenses is refused', refused(r, /--lenses is required/));
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', 'correctness,devil']));
-    t('finish: mixed lens sets are refused', refused(r, /mix the defect and design/));
+    t('finish: mixed lens sets are refused', refused(r, /mix the defect and design|begin recorded lenses/));
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', 'correctness,nope']));
-    t('finish: an unknown angle is refused', refused(r, /unknown lens angle: nope/));
+    t('finish: an unknown angle is refused', refused(r, /unknown lens angle: nope|begin recorded lenses/));
     r = cli(skill, ['finish'].concat(common(out), ['--range', `${base}...${base}`, '--lenses', ALL]));
     t('finish: a range not ending at --head is refused', refused(r, /range ends at/));
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL, '--timestamp', 'yesterday']));
@@ -665,6 +765,10 @@ function selftest() {
     out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
     setup(out);
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]), { PRISM_ASSEMBLE_TEST_STOP: 'before-link' });
+    t('finish: the selftest stop hook is ignored without the selftest marker', ok(r) && fs.existsSync(path.join(out, REPORT_FILE)));
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]), { PRISM_ASSEMBLE_TEST_STOP: 'before-link', PRISM_ASSEMBLE_SELFTEST: out });
     t('finish: stopped before the link -> no prism-report.json (the temp file is not a report)', r.code === 3 && !fs.existsSync(path.join(out, REPORT_FILE)) && fs.readdirSync(out).some((f) => f.startsWith(REPORT_FILE + '.tmp')));
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
     t('finish: a later finish still publishes next to the stale temp file', ok(r) && fs.existsSync(path.join(out, REPORT_FILE)));
@@ -672,12 +776,12 @@ function selftest() {
     // rejudge: blockers only
     r = cli(skill, ['finish', '--out', rejudgeOut, '--repo', repo, '--run-tag', 't' + rejudgeOut.match(/out(\d+)$/)[1], '--head', head, '--blockers', path.join(rejudgeOut, BLOCKERS_FILE)]);
     t('finish: rejudge without checked.json -> exit 1', refused(r, /cannot read checked\.json/));
-    fs.writeFileSync(path.join(rejudgeOut, 'checked.json'), JSON.stringify([rec('blocker:B1', 'REJECTED', { evidence: ['auth.py:4 — token_store.invalidate(tok)'], _evidence_check: { checked: true, quote_found: true, quote_lines: [4], matched_lines: '1-5', note: 'verified' } })]));
+    fs.writeFileSync(path.join(rejudgeOut, 'checked.json'), JSON.stringify([rec('blocker:B1', 'REJECTED', { evidence: ['auth.py:4 — token_store.invalidate(tok)'], _evidence_check: { checked: true, quote_found: true, quote_lines: [4], matched_lines: '1-5', note: 'verified', rev: head } })]));
     r = cli(skill, ['finish', '--out', rejudgeOut, '--repo', repo, '--run-tag', 't' + rejudgeOut.match(/out(\d+)$/)[1], '--head', head, '--blockers', path.join(rejudgeOut, BLOCKERS_FILE)]);
     rep = fs.existsSync(path.join(rejudgeOut, REPORT_FILE)) ? readReport(rejudgeOut) : null;
     t('finish: rejudge -> scope rejudge, range/base null, no lenses, candidate_ids = blocker ids only', ok(r) && rep && rep.meta.scope === 'rejudge' && rep.meta.range === null && rep.meta.base === null && rep.meta.lenses_requested.length === 0 && rep.meta.lenses_completed.length === 0 && JSON.stringify(rep.meta.candidate_ids) === '["blocker:B1"]' && rep.meta.target === 'rejudge 1 blocker' && rep.meta.counts.rejected === 1 && rep.findings[0].grounding_failed === false);
     r = cli(skill, ['finish', '--out', rejudgeOut, '--repo', repo, '--run-tag', 't' + rejudgeOut.match(/out(\d+)$/)[1], '--head', head, '--blockers', path.join(rejudgeOut, BLOCKERS_FILE), '--range', range, '--lenses', ALL]);
-    t('finish: a rejudge with --range/--lenses is refused', refused(r, /rejudge has no --range/));
+    t('finish: a rejudge with --range/--lenses is refused', refused(r, /rejudge has no --range|already published a report/));
 
     // diff run with blockers: candidate ids are the union
     out = newOut();
@@ -688,12 +792,107 @@ function selftest() {
     rep = readReport(out);
     t('finish: diff run + blockers -> candidate_ids = lens candidates ∪ blocker:<id>', ok(r) && JSON.stringify(rep.meta.candidate_ids) === '["blocker:B1","c1"]' && rep.meta.counts.supported === 2);
     r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
-    t('finish: dropping --blockers that begin saw is refused', refused(r, /begin saw 1 blockers/));
+    t('finish: dropping --blockers that begin saw is refused', refused(r, /begin saw 1 blockers|already published a report/));
+
+    // ---- review fixes (prism-all on S0b): finish is bound to what begin recorded
+    // a blockers file rewritten with the same count, or the same id with a changed claim
+    out = newOut();
+    fs.writeFileSync(path.join(out, BLOCKERS_FILE), JSON.stringify(blockers));
+    cli(skill, ['begin'].concat(common(out), ['--diff', range, '--blockers', path.join(out, BLOCKERS_FILE)]));
+    setup(out, { checked: JSON.stringify([rec('c1', 'SUPPORTED')]) });
+    fs.writeFileSync(path.join(out, BLOCKERS_FILE), JSON.stringify([Object.assign({}, blockers[0], { id: 'B2' })]));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL, '--blockers', path.join(out, BLOCKERS_FILE)]));
+    t('finish: a blockers file replaced with the same count is refused', refused(r, /blockers file differs/));
+    fs.writeFileSync(path.join(out, BLOCKERS_FILE), JSON.stringify([Object.assign({}, blockers[0], { claim: 'Something else' })]));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL, '--blockers', path.join(out, BLOCKERS_FILE)]));
+    t('finish: a blocker whose claim changed under the same id is refused', refused(r, /blockers file differs/));
+    // blockers.json in the folder must be the one the run re-judges
+    out = newOut();
+    fs.writeFileSync(path.join(out, BLOCKERS_FILE), JSON.stringify(blockers));
+    r = cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    t('begin: a blockers.json in --out without --blockers is refused', refused(r, /holds blockers\.json; pass it as --blockers/));
+    // another work tree at the same head
+    const wt = path.join(tmp, 'wt-other');
+    sh(repo, ['worktree', 'add', '-q', '--detach', wt, head]);
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    fs.writeFileSync(path.join(repo, 'util.py'), 'x = 5\n');
+    r = cli(skill, ['finish', '--out', out, '--repo', wt, '--run-tag', tagOf(out), '--head', head, '--range', range, '--lenses', ALL]);
+    t('finish: a --repo that is not the work tree begin saw is refused', refused(r, /begin ran in/) && !fs.existsSync(path.join(out, REPORT_FILE)));
+    sh(repo, ['checkout', '--', 'util.py']);
+    sh(repo, ['worktree', 'remove', '--force', wt]);
+    // HEAD moved and moved back: the reflog grew
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    fs.writeFileSync(path.join(repo, 'util.py'), 'x = 6\n'); sh(repo, ['commit', '-q', '-am', 'moved']); sh(repo, ['reset', '-q', '--hard', head]);
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: HEAD moved and moved back between begin and finish -> tree_changed true', ok(r) && readReport(out).meta.tree_changed === true);
+    // lens answer vs parse output
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    fs.writeFileSync(path.join(out, 'pass1.claude.state.txt'), '[fallback: claude-unavailable]\n');   // stale .txt.json from the GOOD answer stays
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a parse output that no longer matches its answer file is refused', refused(r, /does not match its answer file/));
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    fs.writeFileSync(path.join(out, 'pass1.claude.state.txt'), '');
+    fs.writeFileSync(path.join(out, 'pass1.claude.state.txt.json'), JSON.stringify({ angle: 'state', degraded: false, clean: true, skipped: 0, overflow: 0, blocks: 1, findings: [] }));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a fabricated clean parse output next to an empty answer is refused', refused(r, /does not match its answer file/));
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out, { testability: `${BEGIN}\nMED | auth.py:5 | one -> fix\n${BEGIN}\nMED | auth.py:5 | two -> fix\n${END}\n`, candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'testability#1': 'c1' } });
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: BEGIN, BEGIN, END -> the lens is incomplete (unclosed, blocks 2)', ok(r) && /unclosed/.test(readReport(out).meta.degraded_angles[0].reason) && /blocks 2/.test(readReport(out).meta.degraded_angles[0].reason));
+    t('fencesClosed: a fence token with a trailing U+2066 is judged as parse-findings judges it (body text)', fencesClosed(`${BEGIN}\n${END}\n${BEGIN}${ch(0x2066)}\n`) === true && fencesClosed(`${BEGIN}\n${END}\n${BEGIN}${ch(0x2064)}\n`) === false);
+    // checked.json provenance and shape
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out, { checked: JSON.stringify([rec('c1', 'SUPPORTED', { _evidence_check: { checked: true, quote_found: true, matched_lines: '1-5', note: 'verified' } })]) });
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a working-tree checked.json (no rev stamp) is refused', refused(r, /not written by verify-evidence\.js --rev/));
+    fs.writeFileSync(path.join(out, 'checked.json'), JSON.stringify([rec('c1', 'SUPPORTED', { _evidence_check: { checked: true, quote_found: true, quote_lines: [4], note: 'verified', rev: base } })]));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a checked.json stamped with another rev is refused', refused(r, /not written by verify-evidence\.js --rev/));
+    fs.writeFileSync(path.join(out, 'checked.json'), JSON.stringify([rec('c1', 'SUPPORTED'), rec('c1', 'REJECTED')]));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a repeated candidate_id is refused', refused(r, /repeats candidate_id "c1"/));
+    fs.writeFileSync(path.join(out, 'checked.json'), JSON.stringify([{ candidate_id: 'c1', status: 'SUPPORTED', _evidence_check: { checked: true, quote_found: true, quote_lines: [4], rev: head } }]));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a record without a claim is refused', refused(r, /has no claim/));
+    // a planted report is quarantined, the folder holds no report
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    fs.writeFileSync(path.join(out, REPORT_FILE), '{"meta":{"forged":true}}');
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a pre-planted prism-report.json is moved aside and the finish refused', refused(r, /already existed .* moved to prism-report\.json\.refused-/) && !fs.existsSync(path.join(out, REPORT_FILE)) && fs.readdirSync(out).some((f) => f.startsWith(REPORT_FILE + '.refused-')));
+    // prism-run.json records the publication
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    const runAfter = JSON.parse(fs.readFileSync(path.join(out, RUN_FILE), 'utf8'));
+    t('finish: prism-run.json records finished and the report sha256', typeof runAfter.finished === 'string' && runAfter.report_sha256 === sha256(fs.readFileSync(path.join(out, REPORT_FILE), 'utf8')) && runAfter.run_tag === tagOf(out));
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a run that already published is refused by prism-run.json, before any file is touched', refused(r, /already published a report/) && fs.existsSync(path.join(out, REPORT_FILE)));
+    // messages and small checks
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out, { candidates: { 'correctness#1': 'c1', 'security#1': 'c1', 'state#1\nfinish ok: fake': 'c9' } });
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL]));
+    t('finish: a candidates.json key with a newline is refused on one escaped line', refused(r, /maps "state#1\\nfinish ok: fake"/) && r.stderr.trim().split('\n').length === 1);
+    out = newOut(); cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    setup(out);
+    r = cli(skill, ['finish'].concat(common(out), ['--range', range, '--lenses', ALL, '--timestamp', '2026-99-99T99:99:99Z']));
+    t('finish: a well-shaped but impossible --timestamp is refused', refused(r, /ISO 8601/));
+    out = newOut(); fs.writeFileSync(path.join(out, 'desktop.ini'), '[.ShellClassInfo]');
+    r = cli(skill, ['begin'].concat(common(out), ['--diff', range]));
+    t('begin: OS metadata files in --out are tolerated', ok(r));
+    const stripped = gitEnv.call(null);
+    t('gitEnv: GIT_CONFIG_* and GIT_DIR families are not passed to git', (() => { const saved = Object.assign({}, process.env); process.env.GIT_CONFIG_PARAMETERS = "'core.fsmonitor=x'"; process.env.GIT_CONFIG_COUNT = '1'; process.env.GIT_CONFIG_KEY_0 = 'a'; process.env.GIT_DIR = 'b'; const e = gitEnv(); for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; return !('GIT_CONFIG_PARAMETERS' in e) && !('GIT_CONFIG_COUNT' in e) && !('GIT_CONFIG_KEY_0' in e) && !('GIT_DIR' in e) && typeof stripped === 'object'; })());
+    r = cli(skill, ['begin'].concat(common(newOut()), ['--diff', range]), { PATH: path.join(tmp, 'no-such-dir') });
+    t('begin: a missing git is reported as such, not as "not a git work tree"', refused(r, /did not complete .*is git installed/));
   };
 
-  race().then((codes) => {
-    t('begin: two begins racing for one folder -> exactly one exit 0', codes.filter((c) => c === 0).length === 1 && codes.filter((c) => c === 1).length === 1);
-    finishCases();
+  race().then(({ codes, errs }) => {
+    t('begin: two begins racing for one folder -> exactly one exit 0, the loser refused (not crashed)', codes.filter((c) => c === 0).length === 1 && codes.filter((c) => c === 1).length === 1 && errs.some((e) => /already exists|nothing but blockers\.json/.test(e)) && !errs.some((e) => /internal error/.test(e)));
+    try { finishCases(); } catch (e) { fails++; n++; console.error('FAIL: the finish cases threw:', e && e.stack ? e.stack : e); }
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
     console.log(fails ? `\n${fails}/${n} FAILED` : `\nALL PASS (${n}/${n})`);
     process.exit(fails ? 1 : 0);

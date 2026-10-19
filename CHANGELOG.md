@@ -29,6 +29,19 @@ is given.
   `lens_set`, `lenses_requested`, `lenses_completed`, `degraded_angles`, `candidate_ids`,
   `tree_changed`, `unmapped_findings` and `grounding_failed` per record, and publishes with a temp
   file, fsync and one hard link). `--selftest` (73 cases, fixture run folders and a throwaway repo).
+- `finish` is bound to what `begin` recorded (from the `/prism-all` review of S0b): the same work
+  tree (`repo`), the five angles (`lenses`), the same blockers file (`blocker_ids` and
+  `blockers_sha256`); HEAD and the tracked changes come from one `git status --porcelain=v2
+  --branch` call, and a HEAD that moved and came back is seen through the reflog length; each
+  lens answer is parsed again by `parse-findings.js` and a `.txt.json` that differs is refused;
+  `checked.json` must carry `verify-evidence.js --rev <head>`'s `_evidence_check.rev` stamp, one
+  record per candidate, `claim` and `file`; a `prism-report.json` already in the folder is moved
+  to `prism-report.json.refused-<stamp>` and the finish refused, so the folder never holds a report
+  `finish` did not write; `prism-run.json` gains `finished` and `report_sha256`; `begin` probes hard
+  links, refuses a `blockers.json` in the folder that `--blockers` does not name, tolerates OS
+  metadata files; git runs with the `GIT_CONFIG_*` family stripped and fsmonitor/hooks off, and a git
+  that cannot run is reported as such; the selftest-only stop needs the selftest's marker.
+  `verify-evidence.js --rev` stamps `_evidence_check.rev` on every record.
 - **`skills/prism/report-contract.json`** (`{"report_contract": "2"}`, `/prism` only, not synced)
   and **`references/report-contract.md`** (contract 2: scope, versioning, every field, the run
   folder files).

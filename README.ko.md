@@ -332,8 +332,7 @@ codex --version   # >= 0.125.0
 
 - **2026-10-19 (0.6.0)** — ddaro 머지 게이트 지원: `/prism --run-tag` 게이트 실행(`prism-report.json`을
   `assemble-report.js`가 조립, 계약 2 = `references/report-contract.md`), `verify-evidence.js --rev <sha>`(커밋
-  기준 인용 검사, `quote_lines`, REJECTED 주석), 세 리뷰 스킬의 Ideas 줄·`## IDEAS` 절·`meta.ideas`를
-  `assemble-report.js ideas`가 씀. `--run-tag`가 없으면 0.5.0과 같다. 상세는 CHANGELOG.
+  기준 인용 검사, `quote_lines`, REJECTED 주석). `--run-tag`가 없으면 0.5.0과 같다. 상세는 CHANGELOG.
 - **2026-10-19 (0.5.0)** — `/prism`·`/prism-all`·`/prism-codex`에 아이디어 pass(Pass 4): 근거 있는 대안(class / route / subtract)을 `verify-ideas.js`가 gate하고, 쓰지 않은 checker가 판정해, finding과 따로 `## IDEAS`에 적는다(`--no-ideas`로 생략). 새 `/prism-ideas`는 이 pass만 돌린다. Improvement 렌즈 은퇴(design 렌즈셋 = 4). 상세는 CHANGELOG.
 - **2026-10-14 (0.4.2)** — prism-all 리뷰로 `codex-run.sh` 보강: 인용·예시 값 오탐 격리 제거, 더 많은 secret 형식 탐지, 임시 출력을 실행 폴더 밖으로, angle당 동시 실행 1개, PowerShell에서도 `--strict` 동작.
 - **2026-10-14 (0.4.1)** — Codex를 read-only 샌드박스로 실행(읽기만, 쓰기·네트워크 차단). 샌드박스 없이 돌리려면 `PRISM_CODEX_SANDBOX=bypass`를 명시.
