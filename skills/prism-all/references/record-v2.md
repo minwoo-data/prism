@@ -2,6 +2,7 @@
 
 Canonical copy lives in `prism-all/references/`; `prism` and `prism-codex` carry byte-identical
 copies produced by `skills/sync-review-parsers.sh`. Every reported finding is one record.
+Ideas are not finding records: they have their own contract and JSON array (`references/ideas.md`).
 `verify-evidence.js` finalizes `fingerprint`, `evidence_strength`, and `status` (model values are
 overwritten).
 
@@ -15,9 +16,10 @@ unpinned: false                  # true when file:null → excluded from cross-r
 file: src/auth.py                # null allowed only for SUSPECTED
 lines: 84-102
 symbol: reset_password
-category: security               # correctness|security|state|integration|testability|redteam|improvement
+category: security               # correctness|security|state|integration|testability|redteam
                                  # design lenses map: conflict→integration, claim-accuracy→correctness,
-                                 # devil→correctness, robustness→state, improvement→improvement
+                                 # devil→correctness, robustness→state
+                                 # (legacy: `improvement` from ≤0.4 reports; that lens is retired)
 severity: HIGH                   # CRIT|HIGH|MED|LOW
 status: SUPPORTED                # SUSPECTED|SUPPORTED|REPRODUCED|REJECTED
 missing: null                    # required string when SUSPECTED (what blocked grounding)
@@ -42,7 +44,7 @@ reproduction:
   result: null                   # verbatim tail when run
 
 confidence:
-  model_agreement: "3/5"         # /prism, /prism-codex: n/5 lenses. /prism-all: see `agreement` below
+  model_agreement: "3/5"         # /prism, /prism-codex: n/k lenses (k = lenses run: 5 defect, 4 design, +1 redteam). /prism-all: see `agreement` below
   evidence_strength: MEDIUM      # NONE|WEAK|MEDIUM|STRONG  (finalized by verify-evidence.js)
   label: HIGH                    # closed enum below
 
