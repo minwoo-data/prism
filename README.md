@@ -229,6 +229,22 @@ Ideas: 2 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
 - IDEA-2 [claude | route | cost M | WEAK: worth a look] ...
 ```
 
+### Gate run (`--run-tag`, for ddaro's merge gate)
+
+```
+/prism --diff <base>...<head> --lenses=defect --no-pr-body --no-ideas --run-tag <id> --head <head> --out <dir> [--blockers <dir>/blockers.json]
+```
+
+A gate run is a `--diff` review whose `prism-report.json` is assembled by a script
+(`assemble-report.js`), never written by the model: `begin` checks the folder and the tree before
+Pass 1, Pass 2's quotes are checked against the commit (`verify-evidence.js --rev <head>`, so a
+report pins to the head it reviewed), blockers from an earlier run are re-judged as `SUPPORTED`
+(still there) or `REJECTED` (fixed, with the fixing line quoted), and `finish` publishes the report
+whole or not at all with the meta a gate needs (`lenses_completed`, `tree_changed`,
+`candidate_ids`, `grounding_failed` per record). Contract: `references/report-contract.md`
+(`report_contract` 2, read by ddaro from `skills/prism/report-contract.json`). Without `--run-tag`
+nothing changes.
+
 ## Cost
 
 | Mode | Cost | When |
@@ -352,6 +368,11 @@ currency of confirmation. The most honest sentence in a review is often
 
 ## Updates
 
+- **2026-10-19 (v0.6.0)** — Merge-gate support for ddaro: `/prism --run-tag` gate runs whose
+  `prism-report.json` is assembled by `assemble-report.js` (contract 2,
+  `references/report-contract.md`), `verify-evidence.js --rev <sha>` (quotes checked at a commit,
+  `quote_lines`, REJECTED annotated). Without `--run-tag` the reviews run as in 0.5.0. Details in
+  CHANGELOG.
 - **2026-10-19 (v0.5.0)** — Idea pass (Pass 4) in `/prism`, `/prism-all` and `/prism-codex`: grounded
   alternatives (class / route / subtract) gated by `verify-ideas.js`, judged by a checker that did
   not write them, listed under `## IDEAS` apart from findings (`--no-ideas` to skip). New

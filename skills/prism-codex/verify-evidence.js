@@ -48,8 +48,9 @@
  *   - `_evidence_check.quote_lines`: the line numbers the quotes actually sit on (every quote of
  *     at least 8 loose characters, the idea gate's minimum; sorted, unique). `matched_lines`
  *     keeps its old meaning (the cited window, `from-to`) on the branches that had it.
- *   - git runs with the GIT_DIR / GIT_WORK_TREE family removed from the environment and a
- *     60 s timeout. A git that cannot answer (missing, timed out, repository gone, blob past
+ *   - every record's `_evidence_check.rev` is the commit it was checked at.
+ *   - git runs with the GIT_DIR / GIT_WORK_TREE and GIT_CONFIG_* families removed from the
+ *     environment, fsmonitor and hooks off, and a 60 s timeout. A git that cannot answer (missing, timed out, repository gone, blob past
  *     256 MB) is never a verdict on a record: `runAt` throws GitUnavailable and the CLI exits 1.
  *   - an unreadable input, invalid JSON, a non-array, an unknown rev, a missing root or a
  *     stray option prints nothing and exits 1 (the default mode prints `[]` for an unreadable
@@ -225,19 +226,21 @@ function run(records, repoRoot) {
 // SUSPECTED for a healthy file.
 class GitUnavailable extends Error {}
 
-// git reads the repository named by -C, never one a surrounding hook or shell exported.
-const GIT_ENV_OVERRIDES = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'];
+// git reads the repository named by -C with its own configuration: the GIT_DIR family and the
+// GIT_CONFIG_* family a surrounding hook or shell exported are dropped, fsmonitor and hooks are off.
+const GIT_ENV_OVERRIDES = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'];
 function gitEnv() {
   const env = Object.assign({}, process.env);
-  for (const k of GIT_ENV_OVERRIDES) delete env[k];
+  for (const k of Object.keys(env)) if (GIT_ENV_OVERRIDES.indexOf(k) !== -1 || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
   return env;
 }
+const GIT_SAFE = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat'];
 const GIT_TIMEOUT_MS = 60000;
 // Runs git; returns {out} or {status, err} for a non-zero exit; throws GitUnavailable for a child
 // that did not run to completion (spawn error, timeout, signal, output past maxBuffer).
 function gitRun(repoRoot, args) {
   try {
-    return { out: execFileSync('git', ['-C', repoRoot].concat(args), { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: GIT_TIMEOUT_MS, env: gitEnv() }) };
+    return { out: execFileSync('git', ['-C', repoRoot].concat(GIT_SAFE, args), { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: GIT_TIMEOUT_MS, env: gitEnv() }) };
   } catch (e) {
     if (e && typeof e.status === 'number' && !e.signal && e.code !== 'ENOBUFS') return { status: e.status, err: String(e.stderr || '').trim() };
     throw new GitUnavailable(`git ${args[0]} did not complete in ${repoRoot}: ${e && (e.code || e.signal || e.message)}`);
@@ -389,10 +392,16 @@ function resolveRev(repoRoot, rev) {
   return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha) ? sha : null;
 }
 
-// Throws GitUnavailable (and nothing else) when git itself fails during the run.
+// Throws GitUnavailable (and nothing else) when git itself fails during the run. Every record's
+// `_evidence_check` carries `rev`, the commit it was checked at, so a consumer can tell this
+// output from a working-tree check.
 function runAt(records, repoRoot, sha) {
   const memo = new Map();
-  return records.map((r) => checkOneAt(r || {}, repoRoot, sha, memo));
+  return records.map((r) => {
+    const out = checkOneAt(r || {}, repoRoot, sha, memo);
+    out._evidence_check = Object.assign({}, out._evidence_check, { rev: sha });
+    return out;
+  });
 }
 
 // ---------------------------------------------------------------- selftest
@@ -524,7 +533,8 @@ function selftest() {
     r = runAt([Object.assign({}, sup, { status: 'REPRODUCED', reproduction: { status: 'NOT_RUN' } })], tmp, sha1);
     t('[rev] REPRODUCED w/o repro -> SUPPORTED, quote_lines kept', r[0].status === 'SUPPORTED' && JSON.stringify(r[0]._evidence_check.quote_lines) === '[4]');
     const keysDefault = Object.keys(run([Object.assign({}, sup, { status: 'REPRODUCED', reproduction: { status: 'NOT_RUN' } })], tmp)[0]._evidence_check).concat('quote_lines').sort().join();
-    t('[rev] REPRODUCED w/o repro: the default mode\'s keys plus quote_lines, nothing else', Object.keys(r[0]._evidence_check).sort().join() === keysDefault);
+    t('[rev] REPRODUCED w/o repro: the default mode\'s keys plus quote_lines and rev, nothing else', Object.keys(r[0]._evidence_check).filter((k) => k !== 'rev').sort().join() === keysDefault);
+    t('[rev] every record is stamped with the rev it was checked at', runAt([sup, rej, { status: 'SUSPECTED', file: null, claim: 'x', confidence: {} }], tmp, sha1).every((x) => x._evidence_check.rev === sha1));
     r = runAt([Object.assign({}, sup, { file: '/src/Util.js', lines: '1-2', evidence: ['src/Util.js:1 — function a() { return 1;'] })], tmp, sha1);
     t('[rev] a leading-slash repo path is tried under the root first (as the default mode does)', r[0].status === 'SUPPORTED' && run([Object.assign({}, sup, { file: '/src/Util.js', lines: '1-2', evidence: ['src/Util.js:1 — function a() { return 1;'] })], tmp)[0].status === 'SUPPORTED');
     r = runAt([Object.assign({}, sup, { file: 'src', lines: '1', evidence: ['src:1 — tree'] })], tmp, sha1);

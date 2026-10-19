@@ -35,7 +35,7 @@ Run this skill alone when you only want ideas, or with `--findings` to reuse a r
 1. Resolve the targets to file paths and `<repo-root>` (`git rev-parse --show-toplevel`, else the
    targets' common directory). Never pass credential files (`.env`, keys, tokens); the scripts
    refuse them anyway.
-2. Run dir: `RUN="$(bash "<skill dir>/codex-run.sh" init ideas-<slug>)"` (a private temp directory).
+2. Run dir: `bash "<skill dir>/codex-run.sh" init ideas-<slug>` prints a private temp directory. Shell variables do not survive between Bash calls, so write that printed path literally wherever `<run-dir>` appears below, in commands and in agent prompts.
 3. Engines: `both` needs `codex --version` ≥ 0.125.0; otherwise use `claude` and print
    `Codex unavailable: Claude-only` in the header.
 
@@ -55,13 +55,13 @@ and check classify it, report the engine as degraded and the run goes on.
 Build first, then launch. A builder that exits 2 is an argument error: fix it, launch nothing.
 
 - **Claude** (`claude` or `both`):
-  `node "<skill dir>/verify-ideas.js" prompt propose --root <repo-root> ARGS > "$RUN/pass4.claude.ideas.prompt.txt"`.
+  `node "<skill dir>/verify-ideas.js" prompt propose --root <repo-root> ARGS > "<run-dir>/pass4.claude.ideas.prompt.txt"`.
   Only after it exited 0 and the file is non-empty: one Agent (general-purpose): "Read `<that
   file>` completely and do exactly what it says. End your message with the fenced block it asks
-  for." plus the tool rule above, answer file `$RUN/pass4.claude.ideas.txt`.
+  for." plus the tool rule above, answer file `<run-dir>/pass4.claude.ideas.txt`.
 - **Codex** (`codex` or `both`): one Bash call,
-  `bash "<skill dir>/codex-run.sh" ideas "$RUN" ideas --root <repo-root> ARGS`.
-  The answer lands in `$RUN/pass4.codex.ideas.codex.txt`; the summary line says `fence=yes|no`.
+  `bash "<skill dir>/codex-run.sh" ideas "<run-dir>" ideas --root <repo-root> ARGS`.
+  The answer lands in `<run-dir>/pass4.codex.ideas.codex.txt`; the summary line says `fence=yes|no`.
   Never call `codex exec` yourself and never type the prompt: the script builds it from the same
   builder and adds the sandbox preamble, scrub and timeout.
 
@@ -81,7 +81,7 @@ The Claude agent and the Codex call go out in one message, after the Claude prom
 For each engine that ran:
 
 ```
-node "<skill dir>/verify-ideas.js" gate <its answer file> <claude|codex> <repo-root> ARGS > "$RUN/<engine>.gated.json"
+node "<skill dir>/verify-ideas.js" gate <its answer file> <claude|codex> <repo-root> ARGS > "<run-dir>/<engine>.gated.json"
 ```
 
 `counts.gated` = ideas that survived. `degraded: true` = the engine produced no usable answer
@@ -95,19 +95,19 @@ other engine is degraded (its proposer failed, or Codex is gone), check with a f
 of the same engine instead and say so in the header (`checker: same engine, <other> degraded`).
 
 - Checker is Claude:
-  `node "<skill dir>/verify-ideas.js" prompt check --gated "$RUN/<engine>.gated.json" [--findings F] --batch N > "$RUN/pass4.claude.check-<engine>-N.prompt.txt"`
+  `node "<skill dir>/verify-ideas.js" prompt check --gated "<run-dir>/<engine>.gated.json" [--findings F] --batch N > "<run-dir>/pass4.claude.check-<engine>-N.prompt.txt"`
   (stderr says `check batch N/M`; `--batch` is required when M > 1). Only after it exited 0 and the
   file is non-empty: one fresh Agent per batch ("Read `<file>` completely and do exactly what it
-  says." plus the tool rule above), answer file `$RUN/check-<engine>-N.txt`.
+  says." plus the tool rule above), answer file `<run-dir>/check-<engine>-N.txt`.
 - Checker is Codex:
-  `bash "<skill dir>/codex-run.sh" idea-check "$RUN" check-<engine>-N --gated "$RUN/<engine>.gated.json" [--findings F] --batch N`
-  (answer in `$RUN/pass4.codex.check-<engine>-N.codex.txt`; its summary line names the batch's keys).
+  `bash "<skill dir>/codex-run.sh" idea-check "<run-dir>" check-<engine>-N --gated "<run-dir>/<engine>.gated.json" [--findings F] --batch N`
+  (answer in `<run-dir>/pass4.codex.check-<engine>-N.codex.txt`; its summary line names the batch's keys).
 
 Build all checker prompt files first; then all batches of both directions go out in one parallel
 message. Then per checked engine:
 
 ```
-node "<skill dir>/verify-ideas.js" check "$RUN/<engine>.gated.json" <batch-1 answer> <repo-root> [--also <batch-2 answer>]... ARGS > "$RUN/<engine>.checked.json"
+node "<skill dir>/verify-ideas.js" check "<run-dir>/<engine>.gated.json" <batch-1 answer> <repo-root> [--also <batch-2 answer>]... ARGS > "<run-dir>/<engine>.checked.json"
 ```
 
 A failed batch (Codex fallback above, empty answer) may be retried once; pass the retry's file. The
@@ -119,14 +119,14 @@ Pass only the engines that ran: each engine's checked file, or its gated file wh
 to check (degraded, or no idea gated).
 
 - `--engine both`: read the titles and proposals of the GATED ideas in both files. Ideas from
-  **different engines** that propose the same change form a group; write `$RUN/groups.json` as key
+  **different engines** that propose the same change form a group; write `<run-dir>/groups.json` as key
   lists, `[["claude-2-3f9a","codex-1-0b7e"]]` (keys exactly as in the files; `[]` when nothing
   matches). Group only real duplicates: same change, not same topic.
-  `node "<skill dir>/verify-ideas.js" rank "$RUN/claude.checked.json" "$RUN/codex.checked.json" --groups "$RUN/groups.json" > "$RUN/ideas.json"`
-- `--engine claude`: `node "<skill dir>/verify-ideas.js" rank "$RUN/claude.checked.json" > "$RUN/ideas.json"`
-- `--engine codex`: `node "<skill dir>/verify-ideas.js" rank "$RUN/codex.checked.json" > "$RUN/ideas.json"`
+  `node "<skill dir>/verify-ideas.js" rank "<run-dir>/claude.checked.json" "<run-dir>/codex.checked.json" --groups "<run-dir>/groups.json" > "<run-dir>/ideas.json"`
+- `--engine claude`: `node "<skill dir>/verify-ideas.js" rank "<run-dir>/claude.checked.json" > "<run-dir>/ideas.json"`
+- `--engine codex`: `node "<skill dir>/verify-ideas.js" rank "<run-dir>/codex.checked.json" > "<run-dir>/ideas.json"`
 
-Then `node "<skill dir>/verify-ideas.js" render "$RUN/ideas.json"`.
+Then `node "<skill dir>/verify-ideas.js" render "<run-dir>/ideas.json"`.
 
 ## Report
 
@@ -134,7 +134,7 @@ Then `node "<skill dir>/verify-ideas.js" render "$RUN/ideas.json"`.
 PRISM IDEAS — {targets} — {timestamp}
 Findings: {file | none} · Context: {files | none}{ · Codex unavailable: Claude-only}{ · checker: same engine, <engine> degraded}
 <the render output, verbatim: its Engines / Ideas / Excluded / Degraded lines, then the ideas>
-Artifacts: $RUN/ideas.json
+Artifacts: <run-dir>/ideas.json
 ```
 
 Then at most 3 lines of your own: which KEEP ideas look worth a person's decision first, and why.

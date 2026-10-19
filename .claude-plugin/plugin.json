@@ -1,6 +1,6 @@
 {
   "name": "prism",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Evidence-graded multi-angle code review - 5 defect lenses discover in parallel (+ optional Red Team lens), then an Evidence pass pins every candidate to file/lines/execution-path; --reproduce demonstrates failures with throwaway tests; an idea pass adds grounded alternatives, judged by a checker that did not write them and kept apart from findings (--no-ideas to skip). SUSPECTED → SUPPORTED → REPRODUCED: agreement prioritizes, evidence confirms. Design docs get a design lens set (soundness); pair with triad for writing quality.",
   "author": {
     "name": "haroom",

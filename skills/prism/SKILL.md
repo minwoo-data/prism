@@ -1,7 +1,7 @@
 ---
 name: prism
 description: Evidence-graded multi-angle code review — 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path before anything is confirmed. Statuses SUSPECTED → SUPPORTED → REPRODUCED. Agreement is a prioritization signal, not a verdict. --redteam adds an attacker-mindset lens (absorbed prism-devil). Design docs get the design lens set (pair with /triad for writing quality). Use when user says "prism", "prism 돌려", "prism <file>", "full review", "red team", "what could break".
-argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--no-ideas] [--include-improvements] [--lenses=design] [--format json]"
+argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--no-ideas] [--include-improvements] [--lenses=design|defect] [--format json] [--no-pr-body] [--run-tag <id> --head <sha40> --out <dir> [--blockers <file>]]"
 allowed-tools:
   - Read
   - Glob
@@ -18,11 +18,13 @@ user-invocable: true
 > and, when possible, **reproduced it with a failing test**. Agreement decides what gets
 > investigated first; evidence decides what survives.
 
-Files in this skill dir: `parse-findings.js`, `verify-evidence.js`, `verify-ideas.js` (deterministic,
-load-bearing), `templates/` (the idea pass's prompts and output contracts),
-`references/record-v2.md` (finding schema + confidence table), `references/redteam-lens.md`,
-`references/design-lenses.md` (lens set for design docs), `references/ideas.md` (idea pass rules and
-failure handling). Read a reference only when the step below says so.
+Files in this skill dir: `parse-findings.js`, `verify-evidence.js`, `verify-ideas.js`,
+`assemble-report.js` (deterministic, load-bearing), `templates/` (the idea pass's prompts and output
+contracts), `references/record-v2.md` (finding schema + confidence table),
+`references/redteam-lens.md`, `references/design-lenses.md` (lens set for design docs),
+`references/ideas.md` (idea pass rules and failure handling), `references/report-contract.md` and
+`report-contract.json` (the gate run's report contract). Read a reference only when the step below
+says so.
 
 ## The evidence ladder
 
@@ -52,6 +54,9 @@ failure handling). Read a reference only when the step below says so.
 | `--include-improvements` | Alias kept for old commands: turns the idea pass on, even with `--quick` (then without `<findings>`). `--no-ideas` wins over it. |
 | `--format json` | Also emit `prism-report.json` (finding records v2). |
 | `--lenses=design` | Design lens set for docs/plans/specs (automatic when the target is mostly markdown). `classic` is accepted as an alias. See `references/design-lenses.md`. |
+| `--lenses=defect` | The 5 defect lenses, whatever the share of markdown in the target. |
+| `--no-pr-body` | `--diff` mode: leave the PR description out of the lens context. |
+| `--run-tag <id>` | **Gate run** (ddaro's merge gate): the report is assembled by `assemble-report.js`, not written by the model. Takes `--head <sha40>`, `--out <dir>`, `--blockers <file>` (accepted only with `--run-tag`) and implies `--no-ideas` and `--format json`. See "Gate run" below. |
 
 ## Target resolution
 
@@ -80,7 +85,8 @@ Range: dirty worktree → staged+unstaged vs `HEAD`; clean → `merge-base main.
 `<range>` overrides). Collect and hand each lens: (1) changed hunks, (2) pre-change code per hunk
 (`git show <base>:<file>`), (3) enclosing function/class + **up to ~5 direct callers/callees**
 (capped against the prompt-size guard), (4) tests referencing changed symbols, (5) touched
-schema/config/migration files, (6) PR description (`gh pr view --json title,body`).
+schema/config/migration files, (6) PR description (`gh pr view --json title,body`; skipped with
+`--no-pr-body`).
 Frame every lens with **"What regression risk does *this change* newly introduce?"** Findings must
 reference a hunk; pre-existing issues go under `PRE-EXISTING (out of scope)`, max 3 lines.
 (`--diff` is `/prism` only; for cross-model diff review run `/prism-all` on the collected context.)
@@ -104,8 +110,9 @@ lens: they come from the idea pass (Pass 4).
 
 ## Pass 1 — Parallel discovery
 
-Launch all agents in a **single message** with multiple Agent tool calls (forked context, so
-agents cannot see each other). **Assemble every agent prompt in this order:**
+Launch all agents in a **single message** with multiple Agent tool calls. Each is a fresh
+general-purpose agent that gets only its prompt: agents cannot see each other, and never your
+session. **Assemble every agent prompt in this order:**
 
 1. **Target content** (verbatim; in `--diff` mode the collected diff context) — identical across
    agents, so the shared prefix is prompt-cache friendly.
@@ -311,6 +318,85 @@ fixed, stop the pass and report `Ideas: failed (<step>: <reason>)`.
 
 ---
 
+## Gate run (`--run-tag`, for ddaro's merge gate)
+
+A gate run is a `/prism --diff` review whose JSON report a script assembles from the run's files,
+so that a machine can read it (`references/report-contract.md`, contract 2). `--head`, `--out` and
+`--blockers` are accepted only together with `--run-tag`; `--run-tag` implies `--no-ideas` (the
+gate passes it explicitly too; `--include-improvements` cannot turn Pass 4 on here) and
+`--format json`. Everything not listed below is as in the passes above.
+
+| Option | Meaning |
+|---|---|
+| `--run-tag <id>` | the gate's run id; `meta.run_tag` |
+| `--head <sha40>` | the commit under review. `meta.head` and Pass 2's `verify-evidence.js --rev` use this value only |
+| `--out <dir>` | the run dir and the report's location: use it as `<run-dir>` as is, no `mktemp` |
+| `--blockers <file>` | blockers carried over from an earlier run (the gate writes it, usually `<out>/blockers.json`): each becomes a Pass 2 candidate `blocker:<id>` |
+
+1. **Start check**, before anything else. The script enforces the argument rules, an empty run
+   folder (nothing but `blockers.json`), a clean tree at `--head`, the blockers file, and creates
+   `<run-dir>/prism-run.json` exclusively:
+   ```
+   node "<this skill dir>/assemble-report.js" begin --out "<run-dir>" --repo "<repo-root>" --run-tag <id> --head <sha40> --diff <base>...<head> [--blockers "<file>"] --lenses defect
+   ```
+   (a rejudge, `--blockers` without `--diff` or a target: the same line without `--diff`.) `<base>`
+   and `<head>` are 40-hex shas: resolve the `--diff` range first (`git merge-base`, `git rev-parse`)
+   and reuse the same string for `finish --range`. Exit 1: stop, do nothing else, show its stderr.
+   A folder that already holds `prism-run.json` is refused: the gate hands out a fresh folder per
+   run, and an interrupted run is not resumed in place. `begin` records the repository, the five
+   angles, the blockers (ids and hash) in `prism-run.json`; `finish` refuses a call that names
+   anything else.
+2. **Pass 1** (not in a rejudge): the lenses are fresh general-purpose agents that get only their
+   prompt, never this session (the session that wrote the change must not brief its reviewer).
+   Angles: `correctness`, `security`, `state`, `integration`, `testability` (`--lenses=defect`).
+   Just before launching a lens, delete `<run-dir>/pass1.claude.<angle>.txt`. Each agent is told:
+   "Use only Read, Grep and Glob; use Write only to save your final fenced block, byte for byte, to
+   `<run-dir>/pass1.claude.<angle>.txt` (a new file). Do not modify any other file." If the agent
+   fails (an error or an abort), or the file is missing or empty when it returns, write
+   `[fallback: claude-unavailable]` to that file and nothing else: never copy a block out of the
+   agent's message, never judge it. Then, per angle:
+   ```
+   node "<this skill dir>/parse-findings.js" "<run-dir>/pass1.claude.<angle>.txt" "<angle>" > "<run-dir>/pass1.claude.<angle>.txt.json"
+   ```
+3. **Triage** as above, then write the map from lens findings to candidates to
+   `<run-dir>/candidates.json`: `{"<angle>#<n>": "<candidate id>", ...}`. `<angle>#<n>` is the
+   finding's 1-based position in that angle's parsed `findings` array (not a line number); several
+   findings may map to one candidate; a `degraded: true` marker gets no key. `finish` reports the
+   findings left unmapped as `meta.unmapped_findings`.
+4. **Pass 2**: the Evidence Agent is a fresh general-purpose agent too (only its prompt, never this
+   session). Add every blocker as a candidate `blocker:<id>` carrying its file, lines, symbol,
+   claim and original quote. For each, the Evidence Agent answers `SUPPORTED` (still there: quote
+   the current line) or `REJECTED` (fixed: quote the fixed code at that place). Every record in
+   `records.json`, including the `SUSPECTED (missing: EVIDENCE_PASS_FAILED)` records you write for
+   a failed chunk, carries `candidate_id` byte-equal to a value of `candidates.json` or to
+   `blocker:<id>`; `finish` refuses the whole report otherwise. The machine check reads the commit,
+   not the tree, and writes to a temp name first (a shell redirection would leave an empty file on
+   exit 1):
+   ```
+   node "<this skill dir>/verify-evidence.js" "<run-dir>/records.json" "<repo-root>" --rev <sha40> > "<run-dir>/checked.tmp.json" && mv "<run-dir>/checked.tmp.json" "<run-dir>/checked.json"
+   ```
+   Exit 1: `checked.json` does not exist; stop and report `Report: failed (verify-evidence: <stderr>)`.
+5. **Rejudge** (`--blockers` without `--diff` or a target): skip Pass 1 and triage; Pass 2 runs on
+   the blocker candidates only; `meta.range` is null. The "no argument → whole project" rule does
+   not apply.
+6. **No Pass 3, no Pass 4**: a gate run has no `--reproduce`, and `--no-ideas` is on. The report
+   header's Ideas line is `Ideas: off (--no-ideas)`.
+7. **Report**: `<run-dir>/prism-report.json` is written only by
+   ```
+   node "<this skill dir>/assemble-report.js" finish --out "<run-dir>" --repo "<repo-root>" --run-tag <id> --head <sha40> --range <base>...<head> --lenses correctness,security,state,integration,testability [--blockers "<file>"] [--target "<text>"] [--checklist "<path>"]
+   ```
+   (a rejudge: `--blockers "<file>"`, no `--range`, no `--lenses`.) It reads the lens files, their
+   parse outputs, `candidates.json`, the blockers file and the final `checked.json`; a missing or
+   non-JSON file is exit 1 and no report. It adds `meta.report_contract`, `run_tag`, `head`, `scope`,
+   `candidate_ids`, `lenses_completed`, `degraded_angles`, `tree_changed`, `unmapped_findings` and
+   `grounding_failed` per record, and publishes the file whole or not at all (temp file, fsync, one
+   hard link; a second report in the folder is refused). On exit 1 do not write the report by hand:
+   no inline JSON, no `--artifacts=docs`; print `Report: failed (<reason from its stderr>)` and the
+   human-readable report from `checked.json` as usual. The gate treats a missing report as stale,
+   never as a pass.
+
+---
+
 ## Final report
 
 ```
@@ -362,13 +448,14 @@ counts, ideas}, "findings": [<record v2>...], "ideas": [...] }`. `findings` and 
 unchanged by the idea pass. `ideas` = `ideas.json` `.ideas`; `meta.ideas` = `ideas.json` `.meta`
 plus `"ran": true`. Without the pass, or when it could not finish: `"ideas": []` and `meta.ideas` =
 `{"ran": false, "reason": "--no-ideas" | "--quick" | "failed: <step>"}`. Fingerprints let CI dedup across runs (link
-only; never suppress a prior REJECTED).
+only; never suppress a prior REJECTED). In a gate run (`--run-tag`) none of this applies: the JSON
+report comes from `assemble-report.js finish` only (see "Gate run").
 
 ---
 
 ## Rules
 
-- Each Pass 1 agent runs forked; launch all in one message. Target content first, lens last.
+- Each Pass 1 agent starts fresh with only its prompt; launch all in one message. Target content first, lens last.
 - Pass full target content. Never summarize the input.
 - **Never modify the target project.** Reproduction runs in a temp dir with a stripped env.
 - Evidence chunks ≤8, grouped by file; every quote machine-checked before it ships as SUPPORTED.

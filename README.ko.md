@@ -199,6 +199,21 @@ Ideas: 2 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
 - IDEA-2 [claude | route | cost M | WEAK: worth a look] ...
 ```
 
+### 게이트 실행 (`--run-tag`, ddaro 머지 게이트용)
+
+```
+/prism --diff <base>...<head> --lenses=defect --no-pr-body --no-ideas --run-tag <id> --head <head> --out <dir> [--blockers <dir>/blockers.json]
+```
+
+게이트 실행은 `prism-report.json`을 모델이 아니라 스크립트(`assemble-report.js`)가 조립하는 `--diff`
+리뷰다. `begin`이 Pass 1 전에 실행 폴더와 작업 트리를 검사하고, Pass 2의 인용은 커밋 기준으로
+검사하며(`verify-evidence.js --rev <head>`, 리뷰한 head에 리포트가 고정된다), 이전 실행의 차단
+항목은 `SUPPORTED`(아직 있음)나 `REJECTED`(고쳐짐, 고친 줄 인용)로 다시 판정하고, `finish`가
+게이트가 읽는 meta(`lenses_completed`, `tree_changed`, `candidate_ids`, 레코드별
+`grounding_failed`)와 함께 리포트를 통째로 게시한다. 계약은 `references/report-contract.md`
+(`report_contract` 2, ddaro는 `skills/prism/report-contract.json`에서 읽는다). `--run-tag`가 없으면
+아무것도 바뀌지 않는다.
+
 ## 비용
 
 | 모드 | 비용 | 언제 |
@@ -315,6 +330,9 @@ codex --version   # >= 0.125.0
 
 ## 업데이트 기록
 
+- **2026-10-19 (0.6.0)** — ddaro 머지 게이트 지원: `/prism --run-tag` 게이트 실행(`prism-report.json`을
+  `assemble-report.js`가 조립, 계약 2 = `references/report-contract.md`), `verify-evidence.js --rev <sha>`(커밋
+  기준 인용 검사, `quote_lines`, REJECTED 주석). `--run-tag`가 없으면 0.5.0과 같다. 상세는 CHANGELOG.
 - **2026-10-19 (0.5.0)** — `/prism`·`/prism-all`·`/prism-codex`에 아이디어 pass(Pass 4): 근거 있는 대안(class / route / subtract)을 `verify-ideas.js`가 gate하고, 쓰지 않은 checker가 판정해, finding과 따로 `## IDEAS`에 적는다(`--no-ideas`로 생략). 새 `/prism-ideas`는 이 pass만 돌린다. Improvement 렌즈 은퇴(design 렌즈셋 = 4). 상세는 CHANGELOG.
 - **2026-10-14 (0.4.2)** — prism-all 리뷰로 `codex-run.sh` 보강: 인용·예시 값 오탐 격리 제거, 더 많은 secret 형식 탐지, 임시 출력을 실행 폴더 밖으로, angle당 동시 실행 1개, PowerShell에서도 `--strict` 동작.
 - **2026-10-14 (0.4.1)** — Codex를 read-only 샌드박스로 실행(읽기만, 쓰기·네트워크 차단). 샌드박스 없이 돌리려면 `PRISM_CODEX_SANDBOX=bypass`를 명시.

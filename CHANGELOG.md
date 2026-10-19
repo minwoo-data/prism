@@ -7,11 +7,50 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Merge gate support for ddaro (S0a). Nothing changes for `/prism`, `/prism-all`,
+Merge gate support for ddaro (S0a, S0b). Nothing changes for `/prism`, `/prism-all`,
 `/prism-codex` or `/prism-ideas` as they run today: the new behavior is only on when a new option
 is given.
 
 ### Added
+- **`/prism --run-tag <id>`, the gate run** (S0b): a `--diff` review whose JSON report a script
+  assembles. New `/prism` options `--run-tag`, `--head <sha40>`, `--out <dir>`, `--blockers <file>`
+  (the last three only with `--run-tag`; `--run-tag` implies `--no-ideas` and `--format json`),
+  `--lenses=defect` and `--no-pr-body`. In a gate run the lens agents write their own answer files
+  (`pass1.claude.<angle>.txt`, `[fallback: claude-unavailable]` when one fails), triage writes
+  `candidates.json`, blockers from an earlier run are re-judged (`SUPPORTED` still there,
+  `REJECTED` fixed) and the quote check runs against the commit (`verify-evidence.js --rev`).
+- **`assemble-report.js`** (canonical in prism-all, synced to prism and prism-codex; the gate itself
+  is served by `/prism` only): `begin` (the start check: argument rules, an empty run folder, the
+  tree at `--head` with no tracked change, the blockers file; creates `prism-run.json` exclusively,
+  so two runs cannot share a folder and an interrupted run is not resumed in place) and `finish`
+  (the only writer of `prism-report.json`: reads the lens files, their parse outputs,
+  `candidates.json`, the blockers and `checked.json`, refuses anything missing or not JSON, adds
+  `meta.report_contract`, `record_version` "2.1", `run_tag`, `head`, `base`, `range`, `scope`,
+  `lens_set`, `lenses_requested`, `lenses_completed`, `degraded_angles`, `candidate_ids`,
+  `tree_changed`, `unmapped_findings` and `grounding_failed` per record, and publishes with a temp
+  file, fsync and one hard link). `--selftest` (73 cases, fixture run folders and a throwaway repo).
+- `finish` is bound to what `begin` recorded (from the `/prism-all` review of S0b): the same work
+  tree (`repo`), the five angles (`lenses`), the same blockers file (`blocker_ids` and
+  `blockers_sha256`); HEAD and the tracked changes come from one `git status --porcelain=v2
+  --branch` call, and a HEAD that moved and came back is seen through the reflog length; each
+  lens answer is parsed again by `parse-findings.js` and a `.txt.json` that differs is refused;
+  `checked.json` must carry `verify-evidence.js --rev <head>`'s `_evidence_check.rev` stamp, one
+  record per candidate, `claim` and `file`; a `prism-report.json` already in the folder is moved
+  to `prism-report.json.refused-<stamp>` and the finish refused, so the folder never holds a report
+  `finish` did not write; `prism-run.json` gains `finished` and `report_sha256`; `begin` probes hard
+  links, refuses a `blockers.json` in the folder that `--blockers` does not name, tolerates OS
+  metadata files; git runs with the `GIT_CONFIG_*` family stripped and fsmonitor/hooks off, and a git
+  that cannot run is reported as such; the selftest-only stop needs the selftest's marker.
+  `verify-evidence.js --rev` stamps `_evidence_check.rev` on every record.
+- **`skills/prism/report-contract.json`** (`{"report_contract": "2"}`, `/prism` only, not synced)
+  and **`references/report-contract.md`** (contract 2: scope, versioning, every field, the run
+  folder files).
+- `verify-independence.js`: `assemble-report.js` and `references/report-contract.md` are required
+  and selftested; the SKILL.md command-line lint now also covers `assemble-report.js` and
+  `verify-evidence.js` (positional form) and refuses a `$RUN` shell variable.
+- `sync-review-parsers.sh`: 40 generated copies (was 36); prism's `verify-independence.js` requires
+  `report-contract.json`; prism-ideas gets neither new file.
+
 - **`verify-evidence.js --rev <sha>`** (S0a; canonical in prism-all, synced to prism, prism-codex
   and prism-ideas): the merge gate's mode. Quotes are checked against the committed tree
   (`git cat-file blob <sha>:./<path>`, relative to the root, so a root below the top level stays
@@ -39,6 +78,12 @@ is given.
   so a misspelled `--rev` can never silently read the working tree.
 - `verify-ideas.js --selftest` asserts its `MIN_QUOTE` equals `verify-evidence.js`'s exported
   `MIN_QUOTE_LINES`.
+
+### Changed
+- `/prism` SKILL.md: Pass 1 agents are described as fresh agents with only their prompt (the two
+  leftover "forked" phrases are gone); `/prism-ideas` SKILL.md writes the run dir literally instead
+  of a `$RUN` shell variable (shell variables never survived between Bash calls).
+- `plugin.json` 0.6.0.
 
 ## [0.5.0] - 2026-10-19
 
