@@ -68,15 +68,41 @@ which replaces the Improvement lens (S3).
 - **Improvement lens retired** (S3): one channel for alternatives. It is gone from the defect and
   design lens sets (the design set is now 4 lenses), from the `<angle>` lists and from record v2's
   category enum (legacy `improvement` records from ≤0.4 reports have no 0.5 category).
-  `--include-improvements` is still accepted as an alias so old commands work; ideas are on anyway.
+  `--include-improvements` is still accepted as an alias so old commands work: it turns the idea
+  pass on, even under `--quick`, and `--no-ideas` wins over it.
   `codex-run.sh discovery <dir> improvement` now exits 2 and points at the idea pass (selftest
   case added).
-- **Report** (S3): the header says `Ideas: on (<engines>) | off (--no-ideas | --quick)`, and a new
-  `## IDEAS` section (the verbatim `verify-ideas.js render` output) comes after
+- **Report** (S3): the header says `Ideas: on (<engines>) | off (--no-ideas | --quick) | failed
+  (<step>: <reason>)`, naming a degraded proposer or checker, and a new `## IDEAS` section (the
+  verbatim `verify-ideas.js render` output, which carries the heading) comes after
   `## Recommended Action Order`, replacing `## IMPROVEMENTS`. Ideas never enter defect counts, the
   action order, degraded angles or any gate. `--format json` keeps `findings` and `meta.counts`
   unchanged and adds top-level `ideas` and `meta.ideas` (`"ran": true` plus the rank meta, or
-  `{"ran": false, "reason": ...}`).
+  `{"ran": false, "reason": "--no-ideas" | "--quick" | "failed: <step>"}`).
+- **Pass 4 hardening from the S3 review** (`/prism-all` cross-model review of #11):
+  - `/prism-all` checks an engine's ideas with a fresh checker of the same engine when the other
+    engine's proposer degraded, and says so on the Ideas line (as `/prism-ideas` already did).
+  - Every Pass 4 step must exit 0 before the next reads its output; an unfixable failure ends the
+    pass as `failed`, never as an empty "on". Checker prompts are all built before any checker
+    launches. A skipped check ranks the gate output (written out in every skill).
+  - Answer files: deleted before each agent launch (a stale answer never passes for this run's);
+    the fallback marker is written only for a failed agent or a missing or empty file, and gate
+    and check classify every other answer. Pass 4 retries follow their own short rules, and a
+    degraded idea call never enters `meta.degraded_angles` or DEGRADED ANGLES.
+  - `--reproduce` re-checks the post-Pass-3 records from `records.pass3.json` and replaces
+    `checked.json` only on exit 0 with a non-empty result (an in-place rerun emptied it).
+  - A repo root that is the home directory, a drive root or `/` skips the pass (`failed (root)`).
+    Grouping treats idea text as data.
+  - `/prism` creates its run dir once, before Pass 1, with `mktemp -d` (private, no shared parent)
+    and prints a Windows-openable path that every later command and agent prompt uses literally;
+    `$RUN` did not survive between Bash calls.
+  - Lens counts in headers and agreement tags use the size of the lens set that ran (design 4,
+    defect 5, +1 with `--redteam`); the design set no longer reads as a lost lens.
+  - `codex-run.sh`: the oversized idea-prompt hint names `--no-ideas` outside `/prism-ideas`; the
+    retired-angle selftest checks the message.
+  - `verify-independence.js` lints the skill's SKILL.md: `--root` on every `prompt propose` and
+    `codex-run.sh" ideas` command line, no retired angle in the `<angle>` list.
+  - `commands/prism.md` lists `--no-ideas` and the alias (until S4 folds it into the skill).
 - `verify-evidence.js` exports its quote matcher (`quoteWindow` / `quoteInWindow`) for
   verify-ideas.js. Its CLI output and selftest are unchanged, and the CLI only runs when invoked
   directly.

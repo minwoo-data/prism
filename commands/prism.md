@@ -1,7 +1,7 @@
 ---
 name: prism
 description: "Evidence-graded multi-angle code review - 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path. SUSPECTED → SUPPORTED → REPRODUCED; agreement prioritizes, evidence confirms. --redteam adds an attacker-mindset lens."
-argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--include-improvements] [--lenses=design] [--format json]"
+argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--no-ideas] [--include-improvements] [--lenses=design] [--format json]"
 allowed-tools:
   - Read
   - Glob
@@ -18,13 +18,14 @@ Run a multi-angle review across 5 defect-focused lenses in parallel, then ground
 
 | Argument Pattern | Action |
 |---|---|
-| `<target>` | Default: Discovery (5 lenses parallel) → Evidence pass (by-file chunked grounding of ALL candidates). |
-| `<target> --quick` | Discovery only — everything reported as SUSPECTED. |
+| `<target>` | Default: Discovery (5 lenses parallel) → Evidence pass (by-file chunked grounding of ALL candidates) → idea pass (grounded alternatives). |
+| `<target> --quick` | Discovery only — everything reported as SUSPECTED, no idea pass. |
 | `<target> --adversarial` | Evidence pass must argue against its own REJECTs before finalizing. |
 | `<target> --reproduce` | + Reproduction pass: minimal failing tests in a temp dir (never the project tree). Max 5, CRIT/HIGH first. |
 | `<target> --redteam` | + Red Team lens (attacker mindset, project security checklist cross-reference, attack chains). Replaces the retired `/prism-devil`. |
 | `--diff [base...head]` | Review the change, not the file: "what regression does this diff newly introduce?" Preferred for PR review. |
-| `<target> --include-improvements` | Adds the Improvement lens (suggestions labeled separately). |
+| `<target> --no-ideas` | Skip the idea pass. |
+| `<target> --include-improvements` | Alias kept for old commands: turns the idea pass on, even with `--quick`. |
 | `<target> --format json` | Also emit machine-readable `prism-report.json` (finding records v2). |
 | `<target> --lenses=design` | Force the design lens set (automatic for markdown targets). `classic` is an alias. |
 | `(no argument)` | Review the current project's code. |

@@ -44,7 +44,7 @@ reproduction:
   result: null                   # verbatim tail when run
 
 confidence:
-  model_agreement: "3/5"         # /prism, /prism-codex: n/5 lenses. /prism-all: see `agreement` below
+  model_agreement: "3/5"         # /prism, /prism-codex: n/k lenses (k = lenses run: 5 defect, 4 design, +1 redteam). /prism-all: see `agreement` below
   evidence_strength: MEDIUM      # NONE|WEAK|MEDIUM|STRONG  (finalized by verify-evidence.js)
   label: HIGH                    # closed enum below
 

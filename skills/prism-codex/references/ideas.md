@@ -126,7 +126,8 @@ bash "<skill dir>/codex-run.sh" idea-check <run-dir> check-<engine>-<N> --gated 
 ```
 
 Who checks: in `/prism` and `/prism-codex`, a separate agent of the same engine. In `/prism-all`,
-the other engine (Codex checks Claude's ideas, Claude checks Codex's). Every idea is checked once;
+the other engine (Codex checks Claude's ideas, Claude checks Codex's), or a fresh checker of the same
+engine when the other engine's proposer degraded (the header says so). Every idea is checked once;
 grouping comes after the check (4d).
 
 The instructions are `templates/idea-check-prompt.md`: does the proposal address the problem its

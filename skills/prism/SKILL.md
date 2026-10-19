@@ -38,13 +38,13 @@ failure handling). Read a reference only when the step below says so.
 | Invocation | Behavior |
 |---|---|
 | `/prism <target>` | **Default: Discovery → Evidence pass → Ideas.** All candidates get evidence-checked; then the idea pass (Pass 4) proposes grounded alternatives. |
-| `--quick` | Discovery only. Everything reported as `SUSPECTED`. No idea pass. |
+| `--quick` | Discovery only. Everything reported as `SUSPECTED`. No idea pass (unless `--include-improvements`). |
 | `--adversarial` | Evidence pass must argue *against* its own REJECTs before finalizing. |
 | `--reproduce` | + Reproduction pass: minimal failing tests in a temp dir (never the project). |
 | `--redteam` | + 6th discovery agent: hostile attacker-mindset probe (`references/redteam-lens.md`). Adds ATTACK CHAINS and CHECKLIST COVERAGE to the report. |
 | `--diff [base...head]` | Review **the change**, not the file. |
 | `--no-ideas` | Skip the idea pass (Pass 4). |
-| `--include-improvements` | Alias kept for old commands; ideas are on by default. |
+| `--include-improvements` | Alias kept for old commands: turns the idea pass on, even with `--quick` (then without `<findings>`). `--no-ideas` wins over it. |
 | `--format json` | Also emit `prism-report.json` (finding records v2). |
 | `--lenses=design` | Design lens set for docs/plans/specs (automatic when the target is mostly markdown). `classic` is accepted as an alias. See `references/design-lenses.md`. |
 
@@ -62,6 +62,12 @@ failure handling). Read a reference only when the step below says so.
 - **Project security checklist**: before Pass 1, look for `docs/security-checklist.md` →
   `docs/security/checklist.md` → `SECURITY.md` → `docs/SECURITY.md` (first hit, ≤3 tool calls).
   If found, it is handed to the **Security** lens (and the Red Team lens under `--redteam`) only.
+- **Run dir** (once, before Pass 1):
+  `d="$(mktemp -d "${TMPDIR:-${TEMP:-/tmp}}/prism-XXXXXX")" && cd "$d" && { pwd -W 2>/dev/null || pwd; }`
+  prints the run's private directory (`mktemp -d` makes it mode 700 with no shared parent; `pwd -W`
+  gives Git Bash a `C:/...` path the agents' Read/Write tools can open). Every Bash call is a fresh
+  shell, so write that printed path literally wherever `<run-dir>` appears below, in commands and
+  in agent prompts. `records.json`, `checked.json`, the Pass 4 files and `prism-report.json` live there.
 
 ### `--diff` mode (change-scoped review)
 
@@ -134,7 +140,7 @@ node "<this skill dir>/parse-findings.js" "<agent-out>" "<lens>" > "<agent-out>.
 ```
 Then group semantically overlapping findings.
 
-- **model_agreement** = how many lenses flagged it (`3/5`). Prioritization signal only.
+- **model_agreement** = how many lenses flagged it (`3/5`; out of 4 on the design set, +1 with `--redteam`). Prioritization signal only.
 - A parser `degraded:true` record is infra, not a candidate → "DEGRADED LENSES" note, excluded
   from counts and fingerprinting.
 - Order: agreements first (highest N), then singletons by severity.
@@ -180,9 +186,9 @@ Evidence Agent prompt:
 
 **Machine check (invariant):** parse the v2 records to JSON, then
 ```
-node "<this skill dir>/verify-evidence.js" "$RUN/records.json" "<repo-root>" > "$RUN/checked.json"
+node "<this skill dir>/verify-evidence.js" "<run-dir>/records.json" "<repo-root>" > "<run-dir>/checked.json"
 ```
-(`$RUN` = the run's artifacts dir, see Pass 4; Pass 4 reads `checked.json` from there.)
+(`<run-dir>`: see Target resolution; Pass 4 reads `checked.json` from there.)
 It greps every `SUPPORTED`/`REPRODUCED` quote against the cited file+lines (mismatch →
 `SUSPECTED (EVIDENCE_QUOTE_MISMATCH)`) and computes `fingerprint`. **`checked.json` is the source
 of truth.** Self-check: `node verify-evidence.js --selftest`.
@@ -222,58 +228,75 @@ Every record carries `reproduction.status`; `STATIC_EVIDENCE_ONLY` / `NOT_RUN` a
 
 The lenses answer "is this wrong?"; the idea pass answers "what should we do instead?": at most 3
 grounded alternatives per idea lens, gated by a script and judged by a checker that did not write
-them. It runs after Pass 2/3 on every target, code or design. Rules, the gate's checks and failure
+them. It runs after Pass 2/3 on every target, code or design (with `--include-improvements`, even
+under `--quick`). Rules, the gate's checks and failure
 handling: `references/ideas.md` (read it only when a step degrades). **Never type a prompt by
 hand**: prompts come only from `verify-ideas.js prompt`, and no contract or verdict is edited.
 Ideas never enter defect counts, the action order, degraded lenses or any gate.
 
-- `<repo-root>` = `git rev-parse --show-toplevel`, else the targets' common directory (the same
-  root `verify-evidence.js` gets). Every `prompt propose` call passes it as `--root`.
-- `$RUN` = the run's artifacts dir, created once before Pass 2 (`records.json` and `checked.json`
-  live there too):
-  `mkdir -p "${TMPDIR:-${TEMP:-/tmp}}/prism" && RUN="$(mktemp -d "${TMPDIR:-${TEMP:-/tmp}}/prism/<slug>-XXXXXX")"`
-- `<findings>` = `--findings "$RUN/checked.json"`, the **final** one. With `--reproduce`, first run
-  `verify-evidence.js` again on the post-Pass-3 records into `$RUN/checked.json`. No candidates
-  (Pass 2 skipped): leave `<findings>` out.
+- `<repo-root>` = `git rev-parse --show-toplevel` run in the targets' directory, else the targets'
+  common directory (the same root `verify-evidence.js` gets). If that root is your home directory,
+  a drive root or `/`, skip the pass (the gate would accept any file under it as a ground) and
+  report `Ideas: failed (root: <path>)`. Every `prompt propose` call passes it as `--root`.
+- `<findings>` = `--findings "<run-dir>/checked.json"`, the **final** one. With `--reproduce`,
+  write the post-Pass-3 records to `<run-dir>/records.pass3.json`, run
+  `node "<this skill dir>/verify-evidence.js" "<run-dir>/records.pass3.json" "<repo-root>" > "<run-dir>/checked.pass3.json"`,
+  then move that file over `<run-dir>/checked.json` only if it exited 0 and the array is not empty.
+  Never read and write the same file in one command (the shell empties it first, and
+  `verify-evidence.js` prints `[]` for an empty input). No candidates (Pass 2 skipped) or
+  `--quick`: leave `<findings>` out.
 - `<targets>` = `--target <file>` for every file the lenses read. In `--diff` mode write the
-  collected diff context to `$RUN/diff-context.txt` and pass that as the `--target`; it lives
-  outside the repo root, and `--target` makes it quotable anyway.
+  collected diff context to `<run-dir>/diff-context.txt` (redirect the `git`/`gh` output or use the
+  Write tool, never an unquoted heredoc of PR text) and pass that as the `--target`. It lives
+  outside the repo root, so `--target` makes all of it quotable, removed lines and the PR text
+  included; the checker judges whether such a ground still holds.
+- **Reset first**: delete earlier Pass 4 files in `<run-dir>` (`pass4.*`, `*.gated.json`,
+  `*.checked-ideas.json`, `ideas.json`), and on a retry delete the answer file again just before
+  its agent is launched, so a leftover answer never passes for this run's.
 
 Claude agents (proposer and checkers) are told: "Use only Read, Grep and Glob; use Write only to
-save your final fenced block, byte for byte, to `<answer file>`. Do not modify any other file."
-If an agent fails, or its answer file is missing or holds no closed fenced block, write
-`[fallback: claude-unavailable]` to that answer file: gate and check then report the engine as
-degraded and the run goes on. A builder (`prompt propose|check`) that exits 2 is an argument
-error: fix it, launch nothing.
+save your final fenced block, byte for byte, to `<answer file>` (a new file). Do not modify any
+other file." If an agent fails (an error or an abort), or its answer file is missing or empty
+after it returns, write `[fallback: claude-unavailable]` to that answer file. Do not judge any
+other answer yourself (is the fence closed?): gate and check classify it, report the engine as
+degraded and let the run go on.
+
+Exit codes: a builder (`prompt propose|check`) that exits 2 is an argument error: fix it, launch
+nothing (a target it refuses, such as a credential-named file: drop it from `<targets>` and name it
+on the Ideas line). `gate`, `check`, `rank` and `render` must each exit 0 before the next step
+reads their output; on exit 2, fix the input its stderr names and rerun that step. If it cannot be
+fixed, stop the pass and report `Ideas: failed (<step>: <reason>)`.
 
 1. **Propose** (one Agent):
    ```
-   node "<this skill dir>/verify-ideas.js" prompt propose --root "<repo-root>" <targets> <findings> > "$RUN/pass4.claude.ideas.prompt.txt"
+   node "<this skill dir>/verify-ideas.js" prompt propose --root "<repo-root>" <targets> <findings> > "<run-dir>/pass4.claude.ideas.prompt.txt"
    ```
    Only after it exited 0 and the file is non-empty: one Agent (general-purpose): "Read
-   `$RUN/pass4.claude.ideas.prompt.txt` completely and do exactly what it says. End your message
-   with the fenced block it asks for." plus the tool rule above, answer file
-   `$RUN/pass4.claude.ideas.txt`.
+   `<run-dir>/pass4.claude.ideas.prompt.txt` completely and do exactly what it says. End your
+   message with the fenced block it asks for." plus the tool rule above, answer file
+   `<run-dir>/pass4.claude.ideas.txt`.
 2. **Gate:**
    ```
-   node "<this skill dir>/verify-ideas.js" gate "$RUN/pass4.claude.ideas.txt" claude "<repo-root>" <findings> <targets> > "$RUN/claude.gated.json"
+   node "<this skill dir>/verify-ideas.js" gate "<run-dir>/pass4.claude.ideas.txt" claude "<repo-root>" <findings> <targets> > "<run-dir>/claude.gated.json"
    ```
    `counts.gated` 0 (nothing grounded, or `degraded: true`): skip step 3; rank takes the gate output.
 3. **Check** (batches of ≤8, N = 1..⌈counts.gated/8⌉; `prompt check` confirms `check batch N/M` on
    stderr):
    ```
-   node "<this skill dir>/verify-ideas.js" prompt check --gated "$RUN/claude.gated.json" <findings> --batch N > "$RUN/pass4.claude.check-claude-N.prompt.txt"
+   node "<this skill dir>/verify-ideas.js" prompt check --gated "<run-dir>/claude.gated.json" <findings> --batch N > "<run-dir>/pass4.claude.check-claude-N.prompt.txt"
    ```
-   One fresh Agent per batch, all in one message (fresh, so it never sees the proposer's message):
-   "Read `<that prompt file>` completely and do exactly what it says." plus the tool rule above,
-   answer file `$RUN/pass4.claude.check-claude-N.txt`.
+   Build every batch's prompt first, in an earlier message. Then one fresh Agent per batch whose
+   build exited 0 and whose file is non-empty, all in one message (fresh, so it never sees the
+   proposer's message): "Read `<that prompt file>` completely and do exactly what it says." plus
+   the tool rule above, answer file `<run-dir>/pass4.claude.check-claude-N.txt`.
    ```
-   node "<this skill dir>/verify-ideas.js" check "$RUN/claude.gated.json" "$RUN/pass4.claude.check-claude-1.txt" "<repo-root>" [--also "$RUN/pass4.claude.check-claude-N.txt"]... <targets> > "$RUN/claude.checked-ideas.json"
+   node "<this skill dir>/verify-ideas.js" check "<run-dir>/claude.gated.json" "<run-dir>/pass4.claude.check-claude-1.txt" "<repo-root>" [--also "<run-dir>/pass4.claude.check-claude-N.txt"]... <targets> > "<run-dir>/claude.checked-ideas.json"
    ```
-4. **Rank and render** (one engine, so no groups):
+4. **Rank and render** (one engine, so no groups; step 3 skipped: pass
+   `"<run-dir>/claude.gated.json"` instead of the checked file):
    ```
-   node "<this skill dir>/verify-ideas.js" rank "$RUN/claude.checked-ideas.json" > "$RUN/ideas.json"
-   node "<this skill dir>/verify-ideas.js" render "$RUN/ideas.json"
+   node "<this skill dir>/verify-ideas.js" rank "<run-dir>/claude.checked-ideas.json" > "<run-dir>/ideas.json"
+   node "<this skill dir>/verify-ideas.js" render "<run-dir>/ideas.json"
    ```
 
 ---
@@ -285,7 +308,7 @@ PRISM REPORT — {target} — {timestamp}
 Mode: {default | quick | adversarial} [+reproduce] [+redteam] [diff <range>]
 Lenses: defect | design {+redteam} ({auto|explicit})
 Checklist: {path | none}
-Ideas: on (claude) | off (--no-ideas | --quick)
+Ideas: on (claude){ · degraded: <proposer | checker>} | off (--no-ideas | --quick) | failed (<step>: <reason>)
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
 ## REPRODUCED (demonstrated failures)
@@ -315,20 +338,20 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 ## Recommended Action Order
 1. REPRODUCED first, then SUPPORTED by severity (chains before singletons). SUSPECTED items appear as questions, not tasks.
 
-## IDEAS (options, not tasks; absent with --no-ideas / --quick)
-<the output of `node "<this skill dir>/verify-ideas.js" render "$RUN/ideas.json"`, verbatim>
+<the output of `node "<this skill dir>/verify-ideas.js" render "<run-dir>/ideas.json"`, verbatim: its first
+ line is the `## IDEAS (...)` heading. Options, not tasks; absent when off; when failed, `## IDEAS`
+ and one line saying why>
 ```
 
 Record schema, field rules and the confidence table: `references/record-v2.md`.
 
-With `--format json`, write `prism-report.json` to the run's artifacts dir
-(`${TMPDIR:-${TEMP:-/tmp}}/prism/<slug>-<run-id>/`, or `--artifacts=docs` — never the project
-root). Write to a temp file, validate, atomic-rename; on failure emit the JSON inline with a
+With `--format json`, write `prism-report.json` to `<run-dir>` (or `--artifacts=docs` — never the
+project root). Write to a temp file, validate, atomic-rename; on failure emit the JSON inline with a
 `json_output: failed` warning. `{ "meta": {target, mode, lenses, engines, checklist, timestamp,
 counts, ideas}, "findings": [<record v2>...], "ideas": [...] }`. `findings` and `meta.counts` are
 unchanged by the idea pass. `ideas` = `ideas.json` `.ideas`; `meta.ideas` = `ideas.json` `.meta`
-plus `"ran": true`. Without the pass: `"ideas": []` and `meta.ideas` =
-`{"ran": false, "reason": "--no-ideas" | "--quick"}`. Fingerprints let CI dedup across runs (link
+plus `"ran": true`. Without the pass, or when it could not finish: `"ideas": []` and `meta.ideas` =
+`{"ran": false, "reason": "--no-ideas" | "--quick" | "failed: <step>"}`. Fingerprints let CI dedup across runs (link
 only; never suppress a prior REJECTED).
 
 ---

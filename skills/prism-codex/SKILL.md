@@ -47,13 +47,13 @@ Codex는 **read-only 샌드박스**로 돈다(읽기만, 쓰기·네트워크 �
 
 | 형태 | 모드 |
 |---|---|
-| `/prism-codex <target>` | 기본 — 5 discovery + Evidence pass(전 후보 접지) + 아이디어 pass(Pass 4) |
-| `--quick` | Evidence pass 생략 — 전부 `SUSPECTED`, 아이디어 pass도 생략 |
+| `/prism-codex <target>` | 기본 — 렌즈마다 discovery 1(defect 5, design 4) + Evidence pass(전 후보 접지) + 아이디어 pass(Pass 4) |
+| `--quick` | Evidence pass 생략 — 전부 `SUSPECTED`, 아이디어 pass도 생략(`--include-improvements`면 돈다) |
 | `--adversarial` | REJECT 확정 전 반대 주장 |
 | `--reproduce` | + 재현 pass(SUPPORTED CRIT/HIGH 우선, 최대 5건, prism 공통 규약) |
 | `--redteam` | + Red Team 렌즈 |
 | `--no-ideas` | 아이디어 pass(Pass 4) 생략 |
-| `--include-improvements` | 옛 명령용 별칭으로 남겨 둠 — 아이디어는 기본으로 켜져 있다 |
+| `--include-improvements` | 옛 명령용 별칭: 아이디어 pass를 켠다 — `--quick`이어도 돈다(`<findings>` 없이). `--no-ideas`와 같이 주면 `--no-ideas`가 이긴다 |
 | `--lenses=design` | DESIGN 렌즈셋 강제 (markdown 대상은 자동, `classic`은 별칭) |
 | `--format json` | record v2를 `prism-report.json`으로도 출력 |
 | `--artifacts=temp` (기본) / `docs` | 산출물 위치(`docs`는 .gitignore 필수) |
@@ -130,12 +130,14 @@ SEV ∈ `CRIT|HIGH|MED|LOW`. 펜스 밖 텍스트 무시. finding 없으면 빈 
 
 ## Pass 4 — 아이디어 (기본 ON; `--quick`·`--no-ideas`면 OFF)
 
-렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"에 답한다 — 아이디어 렌즈당 최대 3개의 근거 있는 대안을 스크립트가 gate하고, 쓰지 않은 checker가 판정한다. Pass 2/3 뒤에, 코드·설계 대상 모두에서 돈다. 규칙·gate 검사·실패 처리는 `references/ideas.md`(단계가 degraded일 때만 읽는다). **프롬프트를 손으로 쓰지 않는다** — Codex 프롬프트는 `codex-run.sh ideas|idea-check`가 `verify-ideas.js prompt`로 만들고, 계약·판정도 손대지 않는다. 아이디어는 결함 카운트·액션 순서·degraded angle·어떤 게이트에도 들어가지 않는다.
+렌즈는 "이게 틀렸나?", 아이디어 pass는 "대신 무엇을 할까?"에 답한다 — 아이디어 렌즈당 최대 3개의 근거 있는 대안을 스크립트가 gate하고, 쓰지 않은 checker가 판정한다. Pass 2/3 뒤에, 코드·설계 대상 모두에서 돈다(`--include-improvements`가 있으면 `--quick`이어도 돈다). 규칙·gate 검사·실패 처리는 `references/ideas.md`(단계가 degraded일 때만 읽는다). **프롬프트를 손으로 쓰지 않는다** — Codex 프롬프트는 `codex-run.sh ideas|idea-check`가 `verify-ideas.js prompt`로 만들고, 계약·판정도 손대지 않는다. 아이디어는 결함 카운트·액션 순서·degraded angle·어떤 게이트에도 들어가지 않는다.
 
-- `<repo-root>` = `git rev-parse --show-toplevel`, 아니면 대상들의 공통 디렉터리(`verify-evidence.js`가 받는 것과 같은 루트). `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수). `codex-run.sh ideas|idea-check`가 exit 2면 인자 오류다 — 고치고 다시 돌린다(모델 문제가 아니다).
-- `<findings>` = `--findings <run-dir>/checked.json`, **최종** checked.json. `--reproduce`면 Pass 3 이후 record로 `verify-evidence.js`를 다시 돌려 `<run-dir>/checked.json`에 먼저 쓴다. 후보 0건(Pass 2 스킵)이면 `<findings>`를 뺀다.
+- `<repo-root>` = 대상 디렉터리에서 `git rev-parse --show-toplevel`, 아니면 대상들의 공통 디렉터리(`verify-evidence.js`가 받는 것과 같은 루트). 그 루트가 홈·드라이브 루트·`/`이면 Pass 4를 돌리지 않는다(gate가 그 아래 아무 파일이나 근거로 받는다) — `Ideas: failed (root: <경로>)`. `codex-run.sh ideas`는 매번 `--root <repo-root>`를 받는다(필수).
+- `<findings>` = `--findings <run-dir>/checked.json`, **최종** checked.json. `--reproduce`면 Pass 3 이후 record를 `<run-dir>/records.pass3.json`에 쓰고 `node "<skill dir>/verify-evidence.js" <run-dir>/records.pass3.json "<repo-root>" > <run-dir>/checked.pass3.json`을 돌린 다음, exit 0이고 배열이 비어 있지 않을 때만 그 파일을 `<run-dir>/checked.json`으로 옮긴다. 한 명령에서 같은 파일을 입력이자 출력으로 쓰지 않는다(셸이 먼저 비우고, `verify-evidence.js`는 빈 입력에 `[]`를 낸다). 후보 0건(Pass 2 스킵)이거나 `--quick`이면 `<findings>`를 뺀다.
 - `<targets>` = 렌즈가 읽은 파일마다 `--target <file>` (discovery와 같은 목록).
-- Codex 콜은 Bash 1개씩 순차, Bash `timeout`은 discovery와 같다((`PRISM_CODEX_TIMEOUT`+30)×1000 ms). 재시도·fallback도 discovery와 같은 정책.
+- **먼저 초기화**: `<run-dir>`의 이전 Pass 4 결과(`codex.gated.json`, `codex.checked-ideas.json`, `ideas.json`)를 지운다(`--artifacts docs`는 같은 폴더를 다시 쓴다). Codex 답 파일은 `codex-run.sh`가 매 콜 전에 비운다.
+- Codex 콜은 Bash 1개씩 순차, Bash `timeout`은 discovery와 같다((`PRISM_CODEX_TIMEOUT`+30)×1000 ms). 재시도는 `degraded(timeout|codex-unavailable|no-last-message)`와 중단(exit 130)만, 같은 인자로 1회. `degraded(prompt-too-large)`는 재시도하지 않는다(대상을 좁히거나 `--no-ideas`). `secret-scrubbed(...)`·`prompt-modified-during-run`·`scan-failed`는 보안 사건 — 재시도 금지, 사용자에게 알린다. degraded 아이디어 콜은 render의 Degraded 줄과 `meta.ideas`, 헤더의 Ideas 줄에만 나온다 — `meta.degraded_angles`·Engine 줄·DEGRADED ANGLES에는 넣지 않는다(discovery의 fallback 표는 렌즈용이다).
+- **exit code**: `codex-run.sh ideas|idea-check`가 exit 2면 사용법·인자·설치 오류다(빌더 거부 포함) — 고치고 다시 돌린다(모델 문제가 아니다; 빌더가 거부한 대상은 `<targets>`에서 빼고 Ideas 줄에 적는다). `gate`·`check`·`rank`·`render`도 매 단계 exit 0이어야 다음 단계가 그 출력을 읽는다 — exit 2면 stderr가 말하는 입력을 고쳐 그 단계만 다시 돌린다. 고칠 수 없으면 Pass 4를 멈추고 `Ideas: failed (<단계>: <사유>)`로 보고한다.
 
 ```bash
 # 1. 제안 (Codex 1콜) → 답: <run-dir>/pass4.codex.ideas.codex.txt
@@ -146,7 +148,7 @@ node "<skill dir>/verify-ideas.js" gate <run-dir>/pass4.codex.ideas.codex.txt co
 #    배치 N = 1..⌈counts.gated/8⌉, 배치당 Bash 1개(새 Codex 콜 = 제안자와 분리된 checker)
 bash "<skill dir>/codex-run.sh" idea-check <run-dir> check-codex-N --gated <run-dir>/codex.gated.json <findings> --batch N
 node "<skill dir>/verify-ideas.js" check <run-dir>/codex.gated.json <run-dir>/pass4.codex.check-codex-1.codex.txt <repo-root> [--also <run-dir>/pass4.codex.check-codex-N.codex.txt]... <targets> > <run-dir>/codex.checked-ideas.json
-# 4. 순위 + 렌더 (엔진 1개라 groups 없음)
+# 4. 순위 + 렌더 (엔진 1개라 groups 없음). 3을 건너뛰었으면 codex.checked-ideas.json 대신 codex.gated.json을 넘긴다.
 node "<skill dir>/verify-ideas.js" rank <run-dir>/codex.checked-ideas.json > <run-dir>/ideas.json
 node "<skill dir>/verify-ideas.js" render <run-dir>/ideas.json
 ```
@@ -158,8 +160,8 @@ node "<skill dir>/verify-ideas.js" render <run-dir>/ideas.json
 ```
 PRISM-CODEX REPORT — {target} — {timestamp}
 Mode: {default | quick | adversarial} [+reproduce] [+redteam] · Lenses: defect | design {+redteam} ({auto|explicit})
-Engine: Codex CLI (gpt-5.5) {n}/5 · Checklist: {path | none}
-Ideas: on (codex) | off (--no-ideas | --quick)
+Engine: Codex CLI (gpt-5.5) {n}/{k} · Checklist: {path | none}
+Ideas: on (codex){ · degraded: <proposer | checker>} | off (--no-ideas | --quick) | failed (<단계>: <사유>)
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
 ## REPRODUCED / ## SUPPORTED / ## SUSPECTED / ## REJECTED
@@ -168,11 +170,10 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 ## ATTACK CHAINS (--redteam 또는 chain 있을 때) / ## CHECKLIST COVERAGE (체크리스트 로드 시)
 ## DEGRADED ANGLES
 ## Recommended Action Order
-## IDEAS (선택지이지 task가 아니다; --no-ideas / --quick이면 없음)
-<`node "<skill dir>/verify-ideas.js" render <run-dir>/ideas.json` 출력 그대로>
+<`node "<skill dir>/verify-ideas.js" render <run-dir>/ideas.json` 출력 그대로 — 첫 줄이 `## IDEAS (...)` 제목이다. 선택지이지 task가 아니다. off면 없고, failed면 `## IDEAS` 아래 실패 한 줄>
 ```
 
-`[N/5 agreement]`는 우선순위 신호. 단일 모델이므로 합의만으로 MEDIUM 상한. `--quick`: 전부 SUSPECTED. `--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-codex/<slug>-<run-id>/`) 원자적 출력. `findings`·`meta.counts`는 아이디어 pass와 무관하게 그대로이고, 최상위 `ideas`(= `ideas.json`의 `.ideas`)와 `meta.ideas`(= `ideas.json`의 `.meta` + `"ran": true`)를 더한다. pass를 안 돌렸으면 `"ideas": []`, `meta.ideas` = `{"ran": false, "reason": "--no-ideas" | "--quick"}`.
+`{k}` = 돌린 렌즈셋 크기(defect 5, design 4, `--redteam`이면 +1). `[N/{k} agreement]`는 우선순위 신호. 단일 모델이므로 합의만으로 MEDIUM 상한. `--quick`: 전부 SUSPECTED. `--format json`: `${artifacts}/prism-report.json`(기본 `$TMPDIR/prism-codex/<slug>-<run-id>/`) 원자적 출력. `findings`·`meta.counts`는 아이디어 pass와 무관하게 그대로이고, 최상위 `ideas`(= `ideas.json`의 `.ideas`)와 `meta.ideas`(= `ideas.json`의 `.meta` + `"ran": true`)를 더한다. pass를 안 돌렸거나 끝내지 못했으면 `"ideas": []`, `meta.ideas` = `{"ran": false, "reason": "--no-ideas" | "--quick" | "failed: <단계>"}`.
 
 ---
 

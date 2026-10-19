@@ -44,10 +44,11 @@ accepts it; `check` ignores `--findings`). Every `codex-run.sh` call runs with B
 (`PRISM_CODEX_TIMEOUT` (300) + 30) × 1000 ms; a shorter one kills the wrapper (`interrupted`).
 
 Claude agents (proposer and checkers) are told: "Use only Read, Grep and Glob; use Write only to
-save your complete final message to `<answer file>`. Do not modify any other file." If an agent
-fails, or its answer file is missing or holds no closed fenced block, write
-`[fallback: claude-unavailable]` to that answer file: gate and check then report the engine as
-degraded and the run goes on.
+save your complete final message to `<answer file>`. Do not modify any other file." Delete an
+answer file just before its agent is launched, so a leftover answer never passes for this run's.
+If an agent fails, or its answer file is missing or empty after it returns, write
+`[fallback: claude-unavailable]` to that answer file. Do not judge any other answer yourself: gate
+and check classify it, report the engine as degraded and the run goes on.
 
 ## Step 1 — Propose
 

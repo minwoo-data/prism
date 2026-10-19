@@ -85,6 +85,22 @@ function checkNoCrossRefs() {
   ok(`no cross-plugin references in ${files.length} scanned files`);
 }
 
+// SKILL.md's command lines are the contract between the orchestrator and the scripts, and nothing
+// else reads them. Lint the rules a CLI change broke before: --root on every idea-prompt build and
+// no retired discovery angle. Only command forms (`.js" prompt`, `.sh" ideas`) are checked; prose
+// that names a subcommand is not a command line.
+function checkSkillCommands() {
+  const lines = fs.readFileSync(path.join(SELF_DIR, 'SKILL.md'), 'utf8').split('\n');
+  const bad = [];
+  lines.forEach((l, i) => {
+    if (/verify-ideas\.js"\s+prompt\s+propose\b/.test(l) && !/\s--root\s/.test(l)) bad.push(`line ${i + 1}: prompt propose without --root`);
+    if (/codex-run\.sh"\s+ideas\s/.test(l) && !/\s--root\s/.test(l)) bad.push(`line ${i + 1}: codex-run.sh ideas without --root`);
+    if (/`<angle>`/.test(l) && /\bimprovement\b/.test(l)) bad.push(`line ${i + 1}: the retired improvement angle is listed`);
+  });
+  if (bad.length) fail(`SKILL.md command lines no longer match the scripts:\n  ${bad.join('\n  ')}`);
+  ok('SKILL.md command lines match the script CLIs (--root, angles)');
+}
+
 // Windows: from PowerShell/cmd the first `bash` on PATH is often System32\bash.exe (the WSL
 // launcher), which cannot open C:\ paths. Prefer Git Bash; CODEX_RUN_BASH overrides.
 function resolveBash() {
@@ -159,6 +175,7 @@ function checkPrereqs() {
 const strict = process.argv.includes('--strict');
 checkRequired();
 checkNoCrossRefs();
+checkSkillCommands();
 if (strict) { checkScripts(); checkPrereqs(); checkCodexFlags(); }
 process.stdout.write(`[verify-independence:${SELF_NAME}] PASS — skill is self-contained\n`);
 process.exit(0);

@@ -554,7 +554,11 @@ cmd_run() {
       # Hits every angle identically: degraded, not fatal.
       mv -f "$work" "$prompt"
       local hint="Narrow the target or use /prism."
-      [ -n "$idea_kind" ] && hint="Narrow the targets or context, or use --engine claude."
+      if [ -n "$idea_kind" ]; then
+        # --engine is a prism-ideas argument; the review skills turn the pass off instead.
+        hint="Narrow the targets or context, or rerun with --no-ideas."
+        [ "$SKILL_NAME" = prism-ideas ] && hint="Narrow the targets or context, or use --engine claude."
+      fi
       echo "[fallback: prompt-too-large] $bytes bytes > $MAX_BYTES. $hint" > "$out"
       status="degraded(prompt-too-large)"
     fi
@@ -877,7 +881,8 @@ FAKE
     err="$(run ideas "$D" ideas --root "$T" --target "$T/a.js" --findings "$T/notfindings.json" 2>&1 >/dev/null </dev/null)"; rc=$?
     check "a builder refusal on a re-run: exit 2 with its reason, the previous answer untouched" '[ $rc -eq 2 ] && printf "%s" "$err" | grep -q "failed: \[verify-ideas\] the findings file must be" && grep -q "off by one" "$D/pass4.codex.ideas.codex.txt"'
     FAKE_MODE=ok run ideas "$D" ideasbig --root "$T" --target "$T/big.txt" </dev/null >/dev/null 2>&1
-    check "ideas: an oversized prompt names the idea-pass remedies" 'grep -q "^\[fallback: prompt-too-large\].*--engine claude" "$D/pass4.codex.ideasbig.codex.txt"'
+    local big_hint="--no-ideas"; [ "$SKILL_NAME" = prism-ideas ] && big_hint="--engine claude"
+    check "ideas: an oversized prompt names this skill's idea-pass remedy" 'grep -q "^\[fallback: prompt-too-large\].*$big_hint" "$D/pass4.codex.ideasbig.codex.txt"'
     err="$(run ideas "$D" noroot --target "$T/a.js" 2>&1 >/dev/null </dev/null)"; rc=$?
     check "ideas without --root: usage error (exit 2), nothing written" '[ $rc -eq 2 ] && printf "%s" "$err" | grep -q "needs --root" && [ ! -e "$D/pass4.codex.noroot.codex.txt" ]'
     local np badp=0
@@ -893,8 +898,8 @@ FAKE
 
   run discovery "$D" ../escape --target "$T/a.js" <<<'LENS' >/dev/null 2>&1; rc=$?
   check "path-like angle rejected (exit 2)" '[ $rc -eq 2 ]'
-  run discovery "$D" improvement --target "$T/a.js" <<<'LENS' >/dev/null 2>&1; rc=$?
-  check "retired improvement angle rejected (exit 2)" '[ $rc -eq 2 ] && [ ! -e "$D/pass1.codex.improvement.codex.txt" ]'
+  err="$(run discovery "$D" improvement --target "$T/a.js" <<<'LENS' 2>&1 >/dev/null)"; rc=$?
+  check "retired improvement angle rejected (exit 2, points at the idea pass)" '[ $rc -eq 2 ] && printf "%s" "$err" | grep -q "retired" && printf "%s" "$err" | grep -q "idea pass" && [ ! -e "$D/pass1.codex.improvement.codex.txt" ]'
   run discovery "$D" nofile --target "$T/missing.js" <<<'LENS' >/dev/null 2>&1; rc=$?
   check "missing target rejected (exit 2)" '[ $rc -eq 2 ]'
   bounded bash "$SELF" discovery "$D" dangling --target <<<'LENS' >/dev/null 2>&1; rc=$?
