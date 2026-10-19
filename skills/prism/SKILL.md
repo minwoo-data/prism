@@ -254,7 +254,7 @@ Ideas never enter defect counts, the action order, degraded lenses or any gate.
   `<run-dir>`, the `--diff` context file) never decide the root: use the root of the repository
   they were collected from. If the root is your home directory, a drive root, `/`, the temp dir
   itself or `<run-dir>`, skip the pass (the gate would accept any file under it as a ground) and
-  report `Ideas: failed (root: <path>)`. Every `prompt propose` call passes it as `--root`.
+  record it in step 5 with `--failed root --reason "<path>"`. Every `prompt propose` call passes it as `--root`.
 - `<findings>` = `--findings "<run-dir>/checked.json"`, the **final** one. With `--reproduce`,
   write the post-Pass-3 records to `<run-dir>/records.pass3.json`, run
   `node "<this skill dir>/verify-evidence.js" "<run-dir>/records.pass3.json" "<repo-root>" > "<run-dir>/checked.pass3.json"`,
@@ -268,8 +268,15 @@ Ideas never enter defect counts, the action order, degraded lenses or any gate.
   outside the repo root, so `--target` makes all of it quotable, removed lines and the PR text
   included; the checker judges whether such a ground still holds.
 - **Reset first**: delete earlier Pass 4 files in `<run-dir>` (`pass4.*`, `*.gated.json`,
-  `*.checked-ideas.json`, `ideas.json`), and on a retry delete the answer file again just before
-  its agent is launched, so a leftover answer never passes for this run's.
+  `*.checked-ideas.json`, `ideas.json`, `ideas.section.md`, `ideas.report.json`), and on a retry
+  delete the answer file again just before its agent is launched, so a leftover answer never
+  passes for this run's.
+- **The outcome is recorded by a script, never typed** (step 5 below): whether the pass was
+  skipped, stopped at a step or ranked, one `assemble-report.js ideas` call writes
+  `<run-dir>/ideas.section.md` (the report's Ideas line and `## IDEAS` section) and
+  `<run-dir>/ideas.report.json` (`meta.ideas` and `ideas`). When the pass is off (`--no-ideas`, or
+  `--quick` without `--include-improvements`), run it right away with `--skipped --no-ideas` or
+  `--skipped --quick` and go to the report.
 
 Claude agents (proposer and checkers) are told: "Use only Read, Grep and Glob; use Write only to
 save your final fenced block, byte for byte, to `<answer file>` (a new file). Do not modify any
@@ -279,10 +286,11 @@ other answer yourself (is the fence closed?): gate and check classify it, report
 degraded and let the run go on.
 
 Exit codes: a builder (`prompt propose|check`) that exits 2 is an argument error: fix it, launch
-nothing (a target it refuses, such as a credential-named file: drop it from `<targets>` and name it
-on the Ideas line). `gate`, `check`, `rank` and `render` must each exit 0 before the next step
-reads their output; on exit 2, fix the input its stderr names and rerun that step. If it cannot be
-fixed, stop the pass and report `Ideas: failed (<step>: <reason>)`.
+nothing (a target it refuses, such as a credential-named file: drop it from `<targets>` and pass
+it to step 5 as `--dropped-target <file>`). `gate`, `check` and `rank` must each exit 0 before the
+next step reads their output; on exit 2, fix the input its stderr names and rerun that step. If it
+cannot be fixed, stop the pass and record it in step 5 with `--failed <step> --reason "<reason>"`
+(step ∈ `root`, `propose`, `gate`, `check`, `rank`).
 
 1. **Propose** (one Agent):
    ```
@@ -309,12 +317,23 @@ fixed, stop the pass and report `Ideas: failed (<step>: <reason>)`.
    ```
    node "<this skill dir>/verify-ideas.js" check "<run-dir>/claude.gated.json" "<run-dir>/pass4.claude.check-claude-1.txt" "<repo-root>" [--also "<run-dir>/pass4.claude.check-claude-N.txt"]... <targets> > "<run-dir>/claude.checked-ideas.json"
    ```
-4. **Rank and render** (one engine, so no groups; step 3 skipped: pass
+4. **Rank** (one engine, so no groups; step 3 skipped: pass
    `"<run-dir>/claude.gated.json"` instead of the checked file):
    ```
    node "<this skill dir>/verify-ideas.js" rank "<run-dir>/claude.checked-ideas.json" > "<run-dir>/ideas.json"
-   node "<this skill dir>/verify-ideas.js" render "<run-dir>/ideas.json"
    ```
+5. **Record the outcome** (always exactly once, whatever happened above; it renders `ideas.json`
+   itself through `verify-ideas.js render`):
+   ```
+   node "<this skill dir>/assemble-report.js" ideas "<run-dir>" --engines claude --ranked [--dropped-target <file>]...
+   node "<this skill dir>/assemble-report.js" ideas "<run-dir>" --engines claude --failed <step> --reason "<reason>"
+   node "<this skill dir>/assemble-report.js" ideas "<run-dir>" --engines claude --skipped --no-ideas
+   ```
+   Exit 0 writes `<run-dir>/ideas.section.md` and `<run-dir>/ideas.report.json`; its second stdout
+   line is the Ideas line. On a non-zero exit run the same command once more; if it fails again,
+   use neither file: the report says `Ideas: failed (assemble: <its stderr>)` and `meta.ideas` is
+   `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<its stderr>"}` with `"ideas": []`. The format of the Ideas line
+   and of `meta.ideas` lives in `assemble-report.js`'s header, nowhere else.
 
 ---
 
@@ -404,7 +423,7 @@ PRISM REPORT — {target} — {timestamp}
 Mode: {default | quick | adversarial} [+reproduce] [+redteam] [diff <range>]
 Lenses: defect | design {+redteam} ({auto|explicit})
 Checklist: {path | none}
-Ideas: on (claude){ · degraded: <proposer | checker>} | off (--no-ideas | --quick) | failed (<step>: <reason>)
+<the first line of `<run-dir>/ideas.section.md`, verbatim: `Ideas: on (claude)...` | `off (...)` | `failed (...)`>
 Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 
 ## REPRODUCED (demonstrated failures)
@@ -434,7 +453,7 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 ## Recommended Action Order
 1. REPRODUCED first, then SUPPORTED by severity (chains before singletons). SUSPECTED items appear as questions, not tasks.
 
-<the output of `node "<this skill dir>/verify-ideas.js" render "<run-dir>/ideas.json"`, verbatim: its first
+<the rest of `<run-dir>/ideas.section.md` (everything after its first line), verbatim: its first
  line is the `## IDEAS (...)` heading. Options, not tasks; absent when off; when failed, `## IDEAS`
  and one line saying why>
 ```
@@ -442,14 +461,19 @@ Candidates: N discovered → S supported, R reproduced, X rejected, U suspected
 Record schema, field rules and the confidence table: `references/record-v2.md`.
 
 With `--format json`, write `prism-report.json` to `<run-dir>` (or `--artifacts=docs` — never the
-project root). Write to a temp file, validate, atomic-rename; on failure emit the JSON inline with a
+project root). Write to a temp file, validate it with
+```
+node "<this skill dir>/assemble-report.js" check-ideas "<temp file>" "<run-dir>"
+```
+(exit 0: JSON parses, `meta.ideas` and `ideas` equal `ideas.report.json`, `ideas.section.md` is
+untouched), then atomic-rename; on a failed check or write emit the JSON inline with a
 `json_output: failed` warning. `{ "meta": {target, mode, lenses, engines, checklist, timestamp,
 counts, ideas}, "findings": [<record v2>...], "ideas": [...] }`. `findings` and `meta.counts` are
-unchanged by the idea pass. `ideas` = `ideas.json` `.ideas`; `meta.ideas` = `ideas.json` `.meta`
-plus `"ran": true`. Without the pass, or when it could not finish: `"ideas": []` and `meta.ideas` =
-`{"ran": false, "reason": "--no-ideas" | "--quick" | "failed: <step>"}`. Fingerprints let CI dedup across runs (link
-only; never suppress a prior REJECTED). In a gate run (`--run-tag`) none of this applies: the JSON
-report comes from `assemble-report.js finish` only (see "Gate run").
+unchanged by the idea pass. `meta.ideas` = `ideas.report.json` `.meta_ideas` and `ideas` =
+`ideas.report.json` `.ideas`, copied as they are (when `assemble-report.js ideas` itself failed
+twice: `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<its stderr>"}` and `[]`). Fingerprints let CI dedup across
+runs (link only; never suppress a prior REJECTED). In a gate run (`--run-tag`) none of this
+applies: the JSON report comes from `assemble-report.js finish` only (see "Gate run").
 
 ---
 

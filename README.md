@@ -371,8 +371,9 @@ currency of confirmation. The most honest sentence in a review is often
 - **2026-10-19 (v0.6.0)** — Merge-gate support for ddaro: `/prism --run-tag` gate runs whose
   `prism-report.json` is assembled by `assemble-report.js` (contract 2,
   `references/report-contract.md`), `verify-evidence.js --rev <sha>` (quotes checked at a commit,
-  `quote_lines`, REJECTED annotated). Without `--run-tag` the reviews run as in 0.5.0. Details in
-  CHANGELOG.
+  `quote_lines`, REJECTED annotated), and the Ideas line, `## IDEAS` section and `meta.ideas`
+  written by `assemble-report.js ideas` in all three review skills. Without `--run-tag` the
+  reviews run as in 0.5.0. Details in CHANGELOG.
 - **2026-10-19 (v0.5.0)** — Idea pass (Pass 4) in `/prism`, `/prism-all` and `/prism-codex`: grounded
   alternatives (class / route / subtract) gated by `verify-ideas.js`, judged by a checker that did
   not write them, listed under `## IDEAS` apart from findings (`--no-ideas` to skip). New

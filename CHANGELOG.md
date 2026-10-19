@@ -7,11 +7,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Merge gate support for ddaro (S0a, S0b). Nothing changes for `/prism`, `/prism-all`,
-`/prism-codex` or `/prism-ideas` as they run today: the new behavior is only on when a new option
-is given.
+## [0.6.0] - 2026-10-19
+
+Merge gate support for ddaro (S0a, S0b) and one report assembler for the idea pass (S0c).
+Nothing changes for the reviews as they run today except where the idea pass's outcome is
+written: by a script now, in every review skill (prism, prism-all, prism-codex).
 
 ### Added
+- **`assemble-report.js ideas` and `check-ideas`** (S0c, prism, prism-all and prism-codex): the
+  Pass 4 outcome is recorded by one script call, whatever happened (`--skipped --no-ideas|--quick`,
+  `--failed <step> --reason <text>`, or `--ranked`, which renders `ideas.json` itself). It writes
+  `<run-dir>/ideas.section.md` (the report's Ideas line, then the `## IDEAS` section) and
+  `<run-dir>/ideas.report.json` (`meta_ideas`, `ideas`, `section_sha256`), so the Markdown and the
+  JSON always say the same thing. Outcomes: `skipped`, `failed` (+ `stage`, `detail`), `partial`
+  (a proposer or checker degraded, a checker answered only part, or the same engine checked its
+  own ideas: `--checker-same-engine`), `completed`; `--dropped-target` names a target the prompt
+  builder refused. `meta.ideas` gains `outcome` (and `stage`, `detail` on failure); `ran` and
+  `reason` are as in 0.5.0. `check-ideas <report> <run-dir>` is the validation step of a
+  model-written `prism-report.json` (exit 1 when `meta.ideas` or `ideas` differ from the files
+  or the section was edited). The three SKILL.md files paste the Ideas line and IDEAS section from
+  `ideas.section.md`; the Ideas line's format lives in the script's header only.
 - **`/prism --run-tag <id>`, the gate run** (S0b): a `--diff` review whose JSON report a script
   assembles. New `/prism` options `--run-tag`, `--head <sha40>`, `--out <dir>`, `--blockers <file>`
   (the last three only with `--run-tag`; `--run-tag` implies `--no-ideas` and `--format json`),

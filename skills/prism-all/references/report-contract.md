@@ -39,7 +39,7 @@ installed plugin to know what it will get, and `assemble-report.js` copies the v
 | `checklist` | `--checklist` path, else `null` |
 | `timestamp` | ISO 8601 instant of `finish` (`--timestamp` pins it) |
 | `counts` | `{records, supported, reproduced, suspected, rejected}`, counted from `checked.json` only |
-| `ideas` | `{"ran": false, "reason": "--no-ideas"}`: a gate run never runs Pass 4 |
+| `ideas` | `{"ran": false, "reason": "--no-ideas", "outcome": "skipped"}`: a gate run never runs Pass 4 (the same `assemble-report.js ideas` shape as below) |
 
 ### `meta`, added by contract 2
 
@@ -80,6 +80,25 @@ record's `_evidence_check.checked`, `quote_found` and `quote_lines` itself (merg
 ### `ideas`
 
 `[]`. Contract 2 reports never carry ideas; the gate does not read `ideas` or `meta.ideas`.
+
+### `meta.ideas` in every report (contract 2 minor addition, `assemble-report.js ideas`)
+
+Every review skill's report, gate run or not, takes `meta.ideas` and `ideas` from
+`<run-dir>/ideas.report.json`, which `assemble-report.js ideas` writes together with
+`ideas.section.md` (the Ideas line and the `## IDEAS` section). The 0.5.0 shape is kept (`ran`
+true with the rank meta, or `ran` false with `reason` `--no-ideas` | `--quick` | `failed: <step>`)
+and these fields are added:
+
+| field | values |
+|---|---|
+| `outcome` | `skipped` (the pass was off), `failed` (stopped at a step), `partial` (ranked, but a proposer or checker degraded, a checker answered only part, or the same engine checked its own ideas), `completed` |
+| `stage` | with `failed`: the step, `root` \| `propose` \| `gate` \| `check` \| `rank` \| `render` |
+| `detail` | with `failed`: the reason, one line |
+
+A 0.5.0 consumer that reads only `ran` and `reason` sees no change. When `ideas` itself failed twice the report carries `{"ran": false, "reason": "failed: assemble", "outcome": "failed", "stage": "assemble", "detail": "<stderr>"}` with no files, the one shape `check-ideas` accepts without them. The Markdown and the JSON
+come from one result: `ideas.report.json` carries `section_sha256` of `ideas.section.md`, and
+`assemble-report.js check-ideas <report> <run-dir>` refuses a report whose `meta.ideas` or `ideas`
+differ from the files or whose section was edited.
 
 ## Run folder files (what `finish` reads)
 
