@@ -2,7 +2,12 @@
 name: prism
 description: Evidence-graded multi-angle code review — 5 defect lenses discover in parallel, then an Evidence pass pins every candidate to file/lines/execution-path before anything is confirmed. Statuses SUSPECTED → SUPPORTED → REPRODUCED. Agreement is a prioritization signal, not a verdict. --redteam adds an attacker-mindset lens (absorbed prism-devil). Design docs get the design lens set (pair with /triad for writing quality). Use when user says "prism", "prism 돌려", "prism <file>", "full review", "red team", "what could break".
 argument-hint: "[file-or-topic] [--quick] [--adversarial] [--reproduce] [--redteam] [--diff [range]] [--no-ideas] [--include-improvements] [--lenses=design] [--format json]"
-context: fork
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - Agent
 user-invocable: true
 ---
 
@@ -385,9 +390,8 @@ only; never suppress a prior REJECTED).
 | `--quick` / `--no-ideas` | — | — | — | idea pass: 0 |
 
 **Where the tokens go, and how to spend fewer:** (a) the target is sent once per discovery agent —
-use `--diff` for PR review so hunks+context travel instead of whole files; (b) this skill runs in a
-**forked context**, so invoking it at the end of a long session copies that session once before the
-agents spawn — run prism early, or in a fresh session; (c) the Evidence pass re-reads files — the
+use `--diff` for PR review so hunks+context travel instead of whole files; (b) the lens, Evidence and idea
+agents start fresh: each gets only its prompt (target, lens, findings), never your session; (c) the Evidence pass re-reads files — the
 by-file chunking above keeps each read to once per chunk; (d) parsing and quote-checking are done
 by scripts, never by the model; (e) the idea pass sends the target once more (one proposer), its
 checkers get only the ideas, and `--no-ideas` skips it.

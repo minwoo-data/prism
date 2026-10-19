@@ -219,9 +219,14 @@ Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
 ## IDEAS (alternatives, not defects; not in the action order)
 Engines: claude
-Ideas: 3 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
+Ideas: 2 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
 - IDEA-1 [claude | class | cost S | KEEP: worth doing] Issue single-use reset tokens from one helper
-  grounds: PRISM-003 (REPRODUCED) ; ...
+  problem: ... · replaces: ...
+  proposal: ...
+  effect: ... · risk: ...
+  grounds: PRISM-003 (REPRODUCED)
+  check: ...
+- IDEA-2 [claude | route | cost M | WEAK: worth a look] ...
 ```
 
 ## Cost
@@ -229,15 +234,14 @@ Ideas: 3 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
 | Mode | Cost | When |
 |---|---|---|
 | `--quick` | 1.0× | Already-triaged targets (everything SUSPECTED) |
-| default | 1.3–1.5× | Standard reviews |
+| default | 1.3–1.6× | Standard reviews |
 | `--redteam` | +0.25× | Auth / payments / PII / untrusted-input parsers |
 | `--reproduce` | 1.6–2.2× | Before merging anything that matters |
 | idea pass (on by default) | about +30–60 s | Off with `--no-ideas` (gates, CI) or `--quick` |
 
 Evidence-pass cost is ⌈candidates/8⌉ calls, chunked by file. Where tokens go and how to spend
-fewer: the target travels once per discovery agent (use `--diff` for PRs); prism runs in a forked
-context, so invoking it at the end of a long session copies that session once (run it early or in a
-fresh session); parsing and quote-checking are scripts, not model calls.
+fewer: the target travels once per discovery agent (use `--diff` for PRs); every agent starts fresh
+with only its prompt, never your session; parsing and quote-checking are scripts, not model calls.
 
 ---
 
@@ -324,10 +328,11 @@ Full writeup: sibling `triad/docs/codex-5.4-to-5.5.md` in this marketplace.
 ## Requirements
 
 - Claude Code (any version with `/plugin` command) — spawns general-purpose subagents
-- *(Optional — only for `/prism-codex` and `/prism-all`)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
+- Node.js on PATH (the deterministic scripts: `parse-findings.js`, `verify-evidence.js`, `verify-ideas.js`)
+- *(Optional — for `/prism-codex`, `/prism-all`, and `/prism-ideas`, which runs Claude-only without it)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
 - Works on Windows (Git Bash / WSL2), macOS, Linux
 
-The base `/prism` runs entirely within Claude Code. No external CLI required.
+The base `/prism` runs within Claude Code plus Node.js. No external AI CLI required.
 
 ---
 

@@ -108,7 +108,6 @@ which replaces the Improvement lens (S3), then the docs and the release (S4).
   - `verify-independence.js` lints the skill's SKILL.md: every `verify-ideas.js` / `codex-run.sh`
     command line must use a subcommand and options that script's own Usage header lists, idea-prompt
     builds need `--root`, and no retired angle is in the `<angle>` list.
-  - `commands/prism.md` lists `--no-ideas` and the alias (until S4 folds it into the skill).
 - `verify-evidence.js` exports its quote matcher (`quoteWindow` / `quoteInWindow`) for
   verify-ideas.js. Its CLI output and selftest are unchanged, and the CLI only runs when invoked
   directly.
@@ -119,7 +118,9 @@ which replaces the Improvement lens (S3), then the docs and the release (S4).
 - `sync-review-parsers.sh` also generates `skills/prism-ideas` (36 copies).
 - `/prism` is served by the skill alone (S4): `commands/prism.md` is gone and `plugin.json` no
   longer declares `commands`. Its "When to use which" table, the `.` target and the companion
-  list moved into `skills/prism/SKILL.md`.
+  list moved into `skills/prism/SKILL.md`, which now carries the command's `allowed-tools` and no
+  longer declares `context: fork` (a forked skill could not launch its lens agents; prism-all and
+  prism-codex already ran in the caller's context).
 - README / README.ko: the idea pass, `/prism-ideas`, `--no-ideas`, the 4-lens design set; the
   Improvement lens is described as retired (S4).
 

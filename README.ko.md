@@ -18,7 +18,7 @@
 /prism-ideas <target>                  -> 리뷰 없이 대안만 (Claude + Codex 교차 검사)
 ```
 
-모든 finding의 상태: `SUSPECTED`(추론만) → `SUPPORTED`(위치+경로+인용) → `REPRODUCED`(실패 테스트 실행됨) / `REJECTED`(반증 인용). Target은 코드 파일/디렉토리/주제 — 문서는 `/triad`로.
+모든 finding의 상태: `SUSPECTED`(추론만) → `SUPPORTED`(위치+경로+인용) → `REPRODUCED`(실패 테스트 실행됨) / `REJECTED`(반증 인용). Target은 코드 파일/디렉토리/주제/설계 문서 — 문서는 design 렌즈셋(설계가 맞는가)으로 보고, 글 품질은 `/triad`로.
 
 Evidence pass 뒤에는 **아이디어 pass**가 "대신 무엇을 할까?"를 묻고, 근거 있는 대안을 따로 `## IDEAS` 아래에 적는다 — 사람이 고를 선택지이지 finding이 아니고, 카운트에도 들어가지 않는다.
 
@@ -48,6 +48,7 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 |---|---|
 | 넓게 결함 찾기 (증거 등급) | **prism** (이 플러그인) |
 | Claude + Codex 교차 검토 | `/prism-all` (이 플러그인에 포함) |
+| 판정 대신 근거 있는 대안 (PRD 전, 리뷰 뒤) | `/prism-ideas` (이 플러그인에 포함) |
 | 보안·공격자 관점 심층 프로브 | `/prism <target> --redteam` (prism-devil은 0.3.0에서 흡수) |
 | 실제 코드 수정 반복 | [mangchi](https://github.com/minwoo-data/mangchi) |
 | 설계 문서가 맞는지 (충돌·코드 대비 주장 검증·실패 모드) | `/prism <doc>` (design 렌즈셋, markdown이면 자동) |
@@ -75,7 +76,7 @@ Claude에게 "이 파일 리뷰해줘" 하면 "괜찮아 보인다" 답이 오�
 ### 3. 사용
 
 ```
-/prism src/services/auth.py                 # 기본: 5 렌즈 + Evidence pass
+/prism src/services/auth.py                 # 기본: 5 렌즈 + Evidence pass + 아이디어 pass
 /prism src/services/auth.py --quick         # discovery만 (전부 SUSPECTED)
 /prism src/services/auth.py --adversarial   # Evidence pass가 자기 REJECT에 반박
 /prism .                                    # 프로젝트 전체 리뷰
@@ -188,9 +189,14 @@ Candidates: 9 discovered → 4 supported, 1 reproduced, 2 rejected, 2 suspected
 
 ## IDEAS (alternatives, not defects; not in the action order)
 Engines: claude
-Ideas: 3 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
+Ideas: 2 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
 - IDEA-1 [claude | class | cost S | KEEP: worth doing] 재설정 토큰 발급을 1회용 헬퍼 하나로
-  grounds: PRISM-003 (REPRODUCED) ; ...
+  problem: ... · replaces: ...
+  proposal: ...
+  effect: ... · risk: ...
+  grounds: PRISM-003 (REPRODUCED)
+  check: ...
+- IDEA-2 [claude | route | cost M | WEAK: worth a look] ...
 ```
 
 ## 비용
@@ -198,12 +204,12 @@ Ideas: 3 proposed -> 2 grounded -> 1 keep, 1 weak, 0 drop, 0 unchecked
 | 모드 | 비용 | 언제 |
 |---|---|---|
 | `--quick` | 1.0× | 이미 triage된 target |
-| 기본 | 1.3–1.5× | 일반 리뷰 |
+| 기본 | 1.3–1.6× | 일반 리뷰 |
 | `--redteam` | +0.25× | auth / 결제 / PII / 외부 입력 파서 |
 | `--reproduce` | 1.6–2.2× | merge 전 중요한 변경 |
 | 아이디어 pass (기본 켜짐) | 약 +30~60초 | 게이트·CI는 `--no-ideas`, `--quick`이면 꺼짐 |
 
-Evidence pass 비용은 ⌈후보/8⌉ 콜(파일 단위 청킹). 토큰이 가는 곳과 줄이는 법: target이 discovery 에이전트 수만큼 전송된다(PR은 `--diff`); prism은 forked context로 실행되므로 긴 세션 끝에서 부르면 그 세션이 한 번 복제된다(초반이나 새 세션에서 실행); 파싱·인용 검증은 스크립트라 모델 토큰 0.
+Evidence pass 비용은 ⌈후보/8⌉ 콜(파일 단위 청킹). 토큰이 가는 곳과 줄이는 법: target이 discovery 에이전트 수만큼 전송된다(PR은 `--diff`); 에이전트는 모두 자기 프롬프트만 받고 새로 시작한다(지금 세션은 넘어가지 않는다); 파싱·인용 검증은 스크립트라 모델 토큰 0.
 
 ---
 
@@ -289,10 +295,11 @@ codex --version   # >= 0.125.0
 ## Requirements
 
 - Claude Code (`/plugin` 명령 있는 버전) — general-purpose 서브에이전트 스폰
-- *(선택 — `/prism-codex`, `/prism-all`에만)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
+- PATH의 Node.js (결정론 스크립트 `parse-findings.js`·`verify-evidence.js`·`verify-ideas.js`)
+- *(선택 — `/prism-codex`, `/prism-all`, 그리고 없으면 Claude만으로 도는 `/prism-ideas`)* [Codex CLI](https://github.com/openai/codex) `>= 0.125.0`
 - Windows (Git Bash / WSL2), macOS, Linux 지원
 
-기본 `/prism`은 외부 CLI 없이 Claude Code 안에서 완결.
+기본 `/prism`은 Claude Code와 Node.js만으로 돈다(외부 AI CLI 불필요).
 
 ---
 
