@@ -87,6 +87,15 @@ Cross-model rows never fire in single-engine skills. On a design-doc target, a f
 quotes only the document is capped at MEDIUM (every discovery agent already read the doc); a finding
 whose evidence quotes repository code is graded normally (see `design-lenses.md`).
 
+## Record v2.1 (gate runs)
+
+A `/prism --run-tag` report (`references/report-contract.md`) carries `meta.record_version: "2.1"`:
+record v2 as `verify-evidence.js --rev` wrote it, plus `grounding_failed` (set by
+`assemble-report.js finish`: the quote check downgraded the record, or `missing` is exactly
+`EVIDENCE_PASS_FAILED`) and `_evidence_check.quote_lines` (the lines the quotes actually sit on;
+REJECTED records with evidence carry it too, their `status` untouched). Reports written by the
+model stay v2.
+
 ## Certainty language
 
 Only `REPRODUCED` may use certainty language in the report ("does happen"). `SUPPORTED` uses

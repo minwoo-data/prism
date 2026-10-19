@@ -15,9 +15,9 @@ const { execSync } = require('child_process');
 
 const SELF_NAME = 'prism';
 // Required at rest: the contract + the deterministic scripts it invokes.
-const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/ideas.md', 'templates/ideas-contract.md', 'templates/idea-check-contract.md', 'templates/ideas-prompt.md', 'templates/idea-check-prompt.md'];
+const REQUIRED_FILES = ['SKILL.md', 'verify-independence.js', 'parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'assemble-report.js', 'references/record-v2.md', 'references/redteam-lens.md', 'references/design-lenses.md', 'references/ideas.md', 'references/report-contract.md', 'templates/ideas-contract.md', 'templates/idea-check-contract.md', 'templates/ideas-prompt.md', 'templates/idea-check-prompt.md', 'report-contract.json'];
 // Scripts that must pass their own --selftest under --strict (integrity, not just presence).
-const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js', 'verify-ideas.js'];
+const SELFTEST_SCRIPTS = ['parse-findings.js', 'verify-evidence.js', 'verify-ideas.js', 'assemble-report.js'];
 const PREREQUISITES = []; // prism is Claude-only — no external CLI prerequisite
 
 const SELF_DIR = __dirname;
@@ -86,45 +86,60 @@ function checkNoCrossRefs() {
 }
 
 // SKILL.md's command lines are the contract between the orchestrator and the scripts, and nothing
-// else reads them. Every `verify-ideas.js" <cmd>` / `codex-run.sh" <cmd>` command line must name a
-// subcommand that script's own Usage header lists and use only the options that header gives it;
-// idea-prompt builds need --root; the retired angle stays out of the <angle> list. Only command forms
-// (a closing quote after the script name) are checked: prose that names a subcommand is not a command.
+// else reads them. Every `verify-ideas.js" <cmd>` / `codex-run.sh" <cmd>` / `assemble-report.js"
+// <cmd>` / `verify-evidence.js" ...` command line must name a subcommand that script's own Usage
+// header lists (a script whose Usage lines start with a positional, like verify-evidence.js, has
+// the one unnamed form '') and use only the options that header gives it; idea-prompt builds need
+// --root; the retired angle stays out of the <angle> list; no `$RUN` shell variable (the run dir
+// is written literally). Only command forms (a closing quote after the script name) are checked:
+// prose that names a subcommand is not a command.
+const SUB = /^((?:prompt\s+)?[a-z][a-z-]*)(?=\s|$)/;
 function scriptUsage(rel, prefix, name) {
   const file = path.join(SELF_DIR, rel);
   if (!fs.existsSync(file)) return null;
   const table = {};
   for (const l of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
     if (!l.startsWith(prefix)) continue;
-    const m = l.slice(prefix.length).match(new RegExp(`^${name}\\s+((?:prompt\\s+)?[a-z-]+)(.*)$`));
-    if (m) table[m[1].replace(/\s+/, ' ')] = new Set((m[2].match(/--[a-z][a-z-]*/g) || []));
+    const m = l.slice(prefix.length).match(new RegExp(`^${name}\\s+(.*)$`));
+    if (!m) continue;
+    const s = SUB.exec(m[1]);
+    const sub = s ? s[1].replace(/\s+/, ' ') : '';
+    const rest = s ? m[1].slice(s[0].length) : m[1];
+    if (!table[sub]) table[sub] = new Set();
+    for (const o of rest.match(/--[a-z][a-z-]*/g) || []) table[sub].add(o);
   }
   return table;
 }
 function checkSkillCommands() {
   const usage = {
     'verify-ideas.js': scriptUsage('verify-ideas.js', ' *   node ', 'verify-ideas\\.js'),
+    'verify-evidence.js': scriptUsage('verify-evidence.js', ' *   node ', 'verify-evidence\\.js'),
+    'assemble-report.js': scriptUsage('assemble-report.js', ' *   node ', 'assemble-report\\.js'),
     'codex-run.sh': scriptUsage('codex-run.sh', '#   ', 'codex-run\\.sh'),
   };
   const lines = fs.readFileSync(path.join(SELF_DIR, 'SKILL.md'), 'utf8').split(/\r?\n/);
   const bad = [];
   lines.forEach((l, i) => {
     const at = `line ${i + 1}`;
-    const re = /(verify-ideas\.js|codex-run\.sh)"\s+((?:prompt\s+)?[a-z-]+)/g;
+    const re = /(verify-ideas\.js|verify-evidence\.js|assemble-report\.js|codex-run\.sh)"\s+/g;
     let m;
     while ((m = re.exec(l)) !== null) {
-      const script = m[1], sub = m[2].replace(/\s+/, ' ');
+      const script = m[1];
+      const after = l.slice(m.index + m[0].length);
+      const s = SUB.exec(after);
+      const sub = s ? s[1].replace(/\s+/, ' ') : '';
       const table = usage[script];
       if (!table) { bad.push(`${at}: runs ${script}, which this skill does not ship`); continue; }
       if (!table[sub]) { bad.push(`${at}: ${script} has no subcommand '${sub}'`); continue; }
-      const rest = l.slice(m.index + m[0].length).split('`')[0];
-      for (const o of rest.match(/(?<![\w-])--[a-z][a-z-]*/g) || []) if (!table[sub].has(o)) bad.push(`${at}: ${script} ${sub} has no option ${o}`);
+      const rest = (s ? after.slice(s[0].length) : after).split('`')[0];
+      for (const o of rest.match(/(?<![\w-])--[a-z][a-z-]*/g) || []) if (!table[sub].has(o)) bad.push(`${at}: ${script} ${sub || '(positional form)'} has no option ${o}`);
       if ((sub === 'prompt propose' || (script === 'codex-run.sh' && sub === 'ideas')) && !/(?<![\w-])--root\s/.test(rest)) bad.push(`${at}: ${script} ${sub} without --root`);
     }
     if (/`<angle>`/.test(l) && /\bimprovement\b/.test(l)) bad.push(`${at}: the retired improvement angle is listed`);
+    if (/\$RUN\b/.test(l)) bad.push(`${at}: uses the $RUN shell variable (write the run dir literally)`);
   });
   if (bad.length) fail(`SKILL.md command lines no longer match the scripts:\n  ${bad.join('\n  ')}`);
-  ok('SKILL.md command lines match the script usage (subcommands, options, --root, angles)');
+  ok('SKILL.md command lines match the script usage (subcommands, options, --root, angles, no $RUN)');
 }
 
 // Windows: from PowerShell/cmd the first `bash` on PATH is often System32\bash.exe (the WSL

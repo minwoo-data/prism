@@ -5,11 +5,13 @@
 #   bash skills/sync-review-parsers.sh           report drift, then write the copies
 #   bash skills/sync-review-parsers.sh --check   report drift only; exit 1 if any copy differs
 #
-# parse-findings.js, verify-evidence.js, verify-ideas.js, references/{record-v2,redteam-lens,
-# design-lenses,ideas}.md and templates/{ideas-contract,idea-check-contract,ideas-prompt,
-# idea-check-prompt}.md are byte-identical across prism-codex and prism (verify-ideas.js requires
-# ./verify-evidence.js, so both travel together). prism-ideas gets only what the idea pass needs:
-# the three scripts, references/ideas.md and the four templates. codex-run.sh (byte-identical; it
+# parse-findings.js, verify-evidence.js, verify-ideas.js, assemble-report.js,
+# references/{record-v2,redteam-lens,design-lenses,ideas,report-contract}.md and
+# templates/{ideas-contract,idea-check-contract,ideas-prompt,idea-check-prompt}.md are
+# byte-identical across prism-codex and prism (verify-ideas.js requires ./verify-evidence.js, so
+# both travel together). prism-ideas gets only what the idea pass needs: the three scripts,
+# references/ideas.md and the four templates. report-contract.json (the gate's contract version)
+# belongs to prism alone and is not synced. codex-run.sh (byte-identical; it
 # derives its skill name from its directory) goes to prism-codex and prism-ideas; prism is
 # Claude-only. references/codex-invocation.md (name-rewritten) goes to prism-codex only: its
 # per-lens fallback policy does not fit the idea pass, so prism-ideas keeps a short table in its
@@ -23,7 +25,7 @@ mode=sync; [ "${1:-}" = --check ] && mode=check
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
 TEMPLATES=(templates/ideas-contract.md templates/idea-check-contract.md templates/ideas-prompt.md templates/idea-check-prompt.md)
-IDENTICAL=(parse-findings.js verify-evidence.js verify-ideas.js references/record-v2.md references/redteam-lens.md references/design-lenses.md references/ideas.md "${TEMPLATES[@]}")
+IDENTICAL=(parse-findings.js verify-evidence.js verify-ideas.js assemble-report.js references/record-v2.md references/redteam-lens.md references/design-lenses.md references/ideas.md references/report-contract.md "${TEMPLATES[@]}")
 IDEAS_ONLY=(parse-findings.js verify-evidence.js verify-ideas.js references/ideas.md "${TEMPLATES[@]}")
 expected=()   # "<dest relative to skills/>"; content lives at $tmp/<dest>
 
@@ -43,15 +45,19 @@ want prism-ideas/codex-run.sh < "$here/prism-all/codex-run.sh"
 want prism-codex/verify-independence.js < <(sed 's/prism-all/prism-codex/g' "$here/prism-all/verify-independence.js")
 want prism/verify-independence.js < <(sed 's/prism-all/prism/g' "$here/prism-all/verify-independence.js" \
   | perl -0pe "s/const PREREQUISITES = \[\n  \{ cmd: 'codex --version', label: 'Codex CLI', fatal: true, min: '0\.125\.0' \},\n\];/const PREREQUISITES = []; \/\/ prism is Claude-only — no external CLI prerequisite/" \
-  | perl -pe "s/, 'references\/codex-invocation.md'//; s/, 'codex-run.sh'//g")
+  | perl -pe "s/, 'references\/codex-invocation.md'//; s/^(const REQUIRED_FILES = \[.*), 'codex-run.sh'\]/\$1, 'report-contract.json']/; s/, 'codex-run.sh'//g")
 # prism-ideas runs Claude-only when Codex is missing, so Codex is a warning there, not a failure.
+# It has no report assembler: no gate run, no contract (assemble-report.js and report-contract.md
+# are IDENTICAL-only).
 want prism-ideas/verify-independence.js < <(sed 's/prism-all/prism-ideas/g' "$here/prism-all/verify-independence.js" \
   | perl -0pe "s/(\{ cmd: 'codex --version', label: 'Codex CLI', )fatal: true(, min: '0\.125\.0' \})/\${1}fatal: false\${2}/" \
-  | perl -pe "s/, 'references\/record-v2.md', 'references\/redteam-lens.md', 'references\/design-lenses.md'//; s/, 'references\/codex-invocation.md'//")
-[ ${#expected[@]} -eq 36 ] || { echo "sync FAILED: expected 36 generated copies, built ${#expected[@]}" >&2; exit 1; }
+  | perl -pe "s/, 'references\/record-v2.md', 'references\/redteam-lens.md', 'references\/design-lenses.md'//; s/, 'references\/codex-invocation.md'//; s/, 'assemble-report.js'//g; s/, 'references\/report-contract.md'//")
+[ ${#expected[@]} -eq 40 ] || { echo "sync FAILED: expected 40 generated copies, built ${#expected[@]}" >&2; exit 1; }
 grep -q "const PREREQUISITES = \[\]" "$tmp/prism/verify-independence.js" || { echo "sync FAILED: prism PREREQUISITES rewrite did not apply" >&2; exit 1; }
+grep -E "^const REQUIRED_FILES" "$tmp/prism/verify-independence.js" | grep -q "'report-contract.json'" || { echo "sync FAILED: prism REQUIRED_FILES rewrite (report-contract.json) did not apply" >&2; exit 1; }
 grep -q "fatal: false" "$tmp/prism-ideas/verify-independence.js" || { echo "sync FAILED: prism-ideas PREREQUISITES rewrite did not apply" >&2; exit 1; }
 ! grep -qE "record-v2.md|codex-invocation.md" "$tmp/prism-ideas/verify-independence.js" || { echo "sync FAILED: prism-ideas REQUIRED_FILES rewrite did not apply" >&2; exit 1; }
+! grep -E "^const (REQUIRED_FILES|SELFTEST_SCRIPTS)" "$tmp/prism-ideas/verify-independence.js" | grep -qE "assemble-report.js|report-contract.md" || { echo "sync FAILED: prism-ideas assembler rewrite did not apply" >&2; exit 1; }
 
 drift=0
 for rel in "${expected[@]}"; do
