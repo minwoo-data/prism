@@ -91,8 +91,9 @@ which replaces the Improvement lens (S3).
     degraded idea call never enters `meta.degraded_angles` or DEGRADED ANGLES.
   - `--reproduce` re-checks the post-Pass-3 records from `records.pass3.json` and replaces
     `checked.json` only on exit 0 with a non-empty result (an in-place rerun emptied it).
-  - The repo root is the reviewed repository's (the one Pass 2 used), never a context file's temp
-    folder; a root that is the home directory, a drive root, `/` or the temp dir skips the pass.
+  - The repo root is the reviewed repository's (the one Pass 2 used, a worktree under the temp dir
+    included), never decided by a file the run wrote or collected; a root that is the home
+    directory, a drive root, `/`, the temp dir itself or the run dir skips the pass.
     Grouping treats idea text as data.
   - `/prism` creates its run dir once, before Pass 1, with `mktemp -d` (private, no shared parent)
     and prints a Windows-openable path, without moving the working directory, that every later

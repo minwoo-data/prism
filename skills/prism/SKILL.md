@@ -237,12 +237,12 @@ hand**: prompts come only from `verify-ideas.js prompt`, and no contract or verd
 Ideas never enter defect counts, the action order, degraded lenses or any gate.
 
 - `<repo-root>` = the reviewed repository's root, the same root Pass 2 gave `verify-evidence.js`:
-  `git rev-parse --show-toplevel` in the repository the targets live in, else the targets' common
-  directory. A target inside `<run-dir>` or the temp dir (the `--diff` context file) never decides
-  the root: use the root of the repository it was collected from. If the root is your home
-  directory, a drive root, `/` or the temp dir, skip the pass (the gate would accept any file under
-  it as a ground) and report `Ideas: failed (root: <path>)`. Every `prompt propose` call passes it
-  as `--root`.
+  `git rev-parse --show-toplevel` in the repository the targets live in (a worktree under the temp
+  dir included), else the targets' common directory. Files this run wrote or collected (anything in
+  `<run-dir>`, the `--diff` context file) never decide the root: use the root of the repository
+  they were collected from. If the root is your home directory, a drive root, `/`, the temp dir
+  itself or `<run-dir>`, skip the pass (the gate would accept any file under it as a ground) and
+  report `Ideas: failed (root: <path>)`. Every `prompt propose` call passes it as `--root`.
 - `<findings>` = `--findings "<run-dir>/checked.json"`, the **final** one. With `--reproduce`,
   write the post-Pass-3 records to `<run-dir>/records.pass3.json`, run
   `node "<this skill dir>/verify-evidence.js" "<run-dir>/records.pass3.json" "<repo-root>" > "<run-dir>/checked.pass3.json"`,
