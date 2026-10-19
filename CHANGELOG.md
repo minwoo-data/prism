@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Merge gate support for ddaro (S0a). Nothing changes for `/prism`, `/prism-all`, `/prism-codex` or
+`/prism-ideas` as they run today: the new behavior is only on when the new option is given.
+
+### Added
+- **`verify-evidence.js --rev <sha>`** (canonical in prism-all, synced to prism, prism-codex and
+  prism-ideas): the merge gate's mode. Quotes are checked against the committed tree
+  (`git show <sha>:<path>`), never the working tree, so a report pins to the head it reviewed even
+  when the tree moves during the review. A `file` that leaves the repo root (`..`, another drive,
+  an absolute path elsewhere) is not read and becomes `PATH_OUTSIDE_ROOT`; an absolute path under
+  the root is read as repo-relative. `REJECTED` records that carry evidence get their quotes checked
+  too, with the result only in `_evidence_check` (`status`, `missing` and `confidence` are
+  untouched), so a "fixed" claim can be verified against the fixing commit without becoming a
+  ground. New `_evidence_check.quote_lines`: the line numbers the quotes actually sit on (every
+  quote of at least 8 loose characters; sorted, unique); `matched_lines` keeps its meaning. An
+  unreadable input, invalid JSON, a non-array, an unknown rev or a missing root exits 1 with nothing
+  on stdout.
+- Without `--rev` the output is byte-for-byte what 0.5.0 printed: the selftest freezes 0.5.0's
+  output for a fixed record set and compares (47 cases, 38 new).
+
 ## [0.5.0] - 2026-10-19
 
 prism-ideas, slices S1 to S4: the idea pass's contracts and deterministic gate (S1), the
