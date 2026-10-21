@@ -1,2 +1,5 @@
-# Shell scripts must keep LF: bash fails on CRLF (core.autocrlf=true clones on Windows).
+# Every text file keeps LF in the working tree: core.autocrlf=true clones on Windows would give
+# the sync script CRLF canonicals and LF generated copies, so --check reported drift that was
+# only line endings. Shell scripts need LF anyway (bash fails on CRLF).
+* text=auto eol=lf
 *.sh text eol=lf
