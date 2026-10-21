@@ -71,7 +71,8 @@ The Claude agent and the Codex call go out in one message, after the Claude prom
 
 | Summary line / exit | Action |
 |---|---|
-| `degraded(timeout)`, `degraded(codex-unavailable)`, `degraded(no-last-message)`, or interrupted (exit 130, `[fallback: interrupted]`) | Retry that call once with the same arguments. Still degraded: keep the marker, the engine counts as degraded. |
+| `degraded(timeout)`, `degraded(codex-unavailable)`, `degraded(no-last-message)`, or interrupted (exit 130, `[fallback: interrupted]`; read the marker first: an interrupt during quarantine leaves a `secret-scrubbed` marker instead, see below) | Retry that call once with the same arguments. Still degraded: keep the marker, the engine counts as degraded. |
+| `cleanup_failed="<dir>"` on the summary line | The scratch dir could not be deleted and may hold unscrubbed Codex output: tell the user to delete it by hand. The call's result stands. |
 | `degraded(prompt-too-large)`, `degraded(prompt-build-failed)` | No retry (the same input fails again): narrow the targets or context, or use `--engine claude`. |
 | `secret-scrubbed(...)`, or a `prompt-modified-during-run` / `scan-failed` marker | Security incident: no retry. Tell the user what the marker says; the engine counts as degraded. |
 | exit 2 | Usage, argument or install error, or the same call still running: fix it and rerun. Not a model problem. |

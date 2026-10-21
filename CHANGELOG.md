@@ -7,6 +7,62 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-20
+
+The shared safety core of `codex-run.sh` (preamble, secret scan, credential refusal, lock,
+scratch, interrupt handling) is ported back from triad 0.3.3 (main fa9efb6), which collected the
+fixes of the `/prism-all` reviews of mangchi PR #3 and triad PR #7 that prism 0.4.2 to 0.6.0 still
+lacked. The block is now marked `BEGIN/END SHARED SAFETY CORE` so the three plugins' copies can be
+diffed; the lines that differ from triad's block carry a `prism:` tag (the parse-findings.js JSON).
+Nothing changes for a review whose Codex calls succeed.
+
+### Fixed
+- **Placeholders** (PRISM-031 and the triad 0.3.3 regressions): a match is dropped only when its
+  whole value is an example; the key name never counts (`EXAMPLE_API_KEY=<real value>` is a
+  secret, `DUMMY_SERVICE_TOKEN=<real value>` too). A placeholder word may be followed only by more
+  words or only by digits (`your_api_key_here`, `changeme123`), so `your_Zk81mQp2Lx7R` and
+  `ExampleCorp2024Secret` are real values. Documented examples that the old prefix test still
+  quarantined are dropped: shell defaults (`${PW:-changeme}`, `KEY:=changeme`), a vendor prefix
+  followed only by `x` or `*` (`AKIAXXXX...`, `ghp_xxxx...`, `sk-proj-xxxx...`), AWS's
+  `...EXAMPLE` / `...EXAMPLEKEY` values.
+- **Fail closed everywhere in the scan** (PRISM-020): every filter stage of `secret_strings` runs
+  under pipefail and the PEM body grep's status is checked; a failing `sort` in `new_secret_in` is a
+  scan failure, never an empty (clean) list.
+- **Lock** (PRISM-019): a lock without a pid is left alone for 10 s (an attempt that is starting);
+  an abandoned lock is reclaimed under a second lock (`<out>.lock.reclaim`) and re-checked once
+  held, so two attempts that found the same abandoned lock cannot both run; only the owner removes
+  a lock, and `cr_exit` warns when another attempt took the lock over. An mtime that cannot be
+  read counts as old, so such a lock can still be reclaimed.
+- **Stale scratch sweep** (PRISM-017, PRISM-024): never follows a planted symlink or touches
+  another user's dir; a dead attempt's scratch is left alone while anything in it changed in the
+  last 10 min (an orphaned Codex may still write), and a `find` that fails counts as recent.
+  `destroy_dir` refuses a symlink and reports failure; `destroy` removes a link without shredding
+  its target (PRISM-021).
+- **Interrupts** (PRISM-012): a signal that comes while Codex is being started is held until the
+  pids are known; a signal during the scan is held until the verdict is recorded, so an interrupt
+  cannot turn a leak already found into an ordinary `interrupted` (a scan stage killed by the
+  interrupt reads as interrupted, not `scan-failed`); the handler ignores further signals; once
+  the result is final the handler is disarmed, so a late signal cannot replace it.
+- **Cleanup reported** (PRISM-021): the scratch is deleted before the result is published, so a
+  scratch that could not be deleted reaches the JSON (`cleanup_failed`) and the summary line
+  (`cleanup_failed="<dir>"`), on the leak path also the status (`secret-scrubbed(...,cleanup-failed)`)
+  and a `[fallback: CLEANUP FAILED: delete <dir> by hand ...]` marker line; same on an interrupt.
+  The fallback JSON written when node cannot run stays valid (the path is JSON-escaped).
+- `publish_json`: a run whose status is not `ok` is always `degraded:true` with no findings,
+  whatever text the marker embeds (a `[fallback: ...]` marker holding a path with a fence could be
+  parsed as findings before).
+- The `scan-failed` marker says not to auto-retry (SKILL.md and `codex-invocation.md` already
+  did); the user fixes the disk or permissions first.
+
+### Changed
+- `codex-run.sh --selftest`: 100 cases (was 72), 0 skipped on Git Bash (symlink cases use the MSYS
+  emulation when native symlinks are unavailable); the watchdog case uses a 40 s kill grace so a
+  held pipe is obvious. `_CODEX_RUN_KILL_GRACE` is a selftest-only knob.
+- SKILL.md (prism-all, prism-codex, prism-ideas) and `references/codex-invocation.md`: after exit
+  130 read the JSON `status` before re-running (an interrupt during quarantine is still
+  `secret-scrubbed`), `cleanup_failed`, the takeover warning.
+- `plugin.json` 0.6.1.
+
 ## [0.6.0] - 2026-10-19
 
 Merge gate support for ddaro (S0a, S0b) and one report assembler for the idea pass (S0c).

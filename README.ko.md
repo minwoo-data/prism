@@ -330,6 +330,10 @@ codex --version   # >= 0.125.0
 
 ## 업데이트 기록
 
+- **2026-10-20 (0.6.1)** — `codex-run.sh` 공통 안전부를 triad 0.3.3에서 역포트: 값 전체로만 보는 placeholder
+  판정(쉘 기본값·벤더 접두+x·`...EXAMPLE`), 스캔 단계 전부 fail-closed, lock grace·reclaim 가드, symlink를 따라가지
+  않는 stale scratch 정리, 시작·스캔 중 신호 보류(찾은 누출이 `interrupted`로 바뀌지 않음), 정리 실패를 JSON
+  (`cleanup_failed`)·요약 줄에 보고. selftest 100건. 상세는 CHANGELOG.
 - **2026-10-19 (0.6.0)** — ddaro 머지 게이트 지원: `/prism --run-tag` 게이트 실행(`prism-report.json`을
   `assemble-report.js`가 조립, 계약 2 = `references/report-contract.md`), `verify-evidence.js --rev <sha>`(커밋
   기준 인용 검사, `quote_lines`, REJECTED 주석), 세 리뷰 스킬의 Ideas 줄·`## IDEAS` 절·`meta.ideas`를
