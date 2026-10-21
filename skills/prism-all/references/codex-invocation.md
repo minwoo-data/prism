@@ -44,8 +44,9 @@ into `degraded:true`, which is infrastructure, not a candidate: it goes to
 | `[fallback: codex-unavailable]` | Non-zero exit; the marker keeps a 300-byte stderr tail (auth, config, model errors) |
 | `[fallback: no-last-message]` | Exit 0 without a final message. The raw stream is never parsed instead: it echoes the prompt, so example findings in the target would be read as real ones |
 | `[fallback: publish-failed]` | The answer could not be moved into place |
-| `[fallback: interrupted]` | The wrapper got INT/TERM/HUP (for example an outer Bash timeout); Codex was stopped, partial output destroyed, the DEGRADED JSON still written; exit 130 |
-| `[fallback: scan-failed] stream=<s>` | A file could not be scanned for secrets, so it was treated as a leak (fail closed). Security marker |
+| `[fallback: interrupted]` | The wrapper got INT/TERM/HUP (for example an outer Bash timeout); Codex was stopped, partial output destroyed, the DEGRADED JSON still written; exit 130. An interrupt that comes while a leak is being quarantined keeps the security marker instead (status `secret-scrubbed(...)`): read the JSON `status` before re-running after exit 130 |
+| `[fallback: scan-failed] stream=<s>` | A file could not be scanned for secrets, so it was treated as a leak (fail closed). Security marker: never auto-retried; the user checks the disk and permissions first |
+| `[fallback: CLEANUP FAILED: delete <dir> by hand ...]` (extra line) | The scratch dir outside the run dir could not be deleted; it may hold unscrubbed Codex output. Also `cleanup_failed` in the JSON and `cleanup_failed="<dir>"` on the summary line; on the leak path the status becomes `secret-scrubbed(...,cleanup-failed)`. Tell the user |
 | `[fallback: codex-output-contained-secret-pattern] stream=<raw\|msg>` | Scrub hit. Raw output was destroyed. Security incident, not a finding |
 | `[fallback: prompt-modified-during-run]` | Codex wrote a new secret-shaped string into its own prompt file. Prompt and output destroyed. Treat like a scrub hit |
 

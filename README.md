@@ -368,6 +368,11 @@ currency of confirmation. The most honest sentence in a review is often
 
 ## Updates
 
+- **2026-10-20 (v0.6.1)** — `codex-run.sh` shared safety core ported back from triad 0.3.3:
+  value-only placeholder test (shell defaults, vendor prefix + x, `...EXAMPLE`), fail-closed scan
+  stages, lock grace and reclaim guard, symlink-safe stale-scratch sweep, interrupts held during
+  launch and scan (a leak found is never downgraded to `interrupted`), cleanup failures reported in
+  the JSON (`cleanup_failed`) and summary line. Selftest 100 cases. Details in CHANGELOG.
 - **2026-10-19 (v0.6.0)** — Merge-gate support for ddaro: `/prism --run-tag` gate runs whose
   `prism-report.json` is assembled by `assemble-report.js` (contract 2,
   `references/report-contract.md`), `verify-evidence.js --rev <sha>` (quotes checked at a commit,
