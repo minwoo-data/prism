@@ -61,6 +61,9 @@ Nothing changes for a review whose Codex calls succeed.
 - SKILL.md (prism-all, prism-codex, prism-ideas) and `references/codex-invocation.md`: after exit
   130 read the JSON `status` before re-running (an interrupt during quarantine is still
   `secret-scrubbed`), `cleanup_failed`, the takeover warning.
+- `.gitattributes`: every text file keeps LF in the working tree (`* text=auto eol=lf`). On a
+  `core.autocrlf=true` clone the canonicals were CRLF and the sed/perl-generated copies LF, so
+  `sync-review-parsers.sh --check` reported a drift that was only line endings.
 - `plugin.json` 0.6.1.
 
 ## [0.6.0] - 2026-10-19

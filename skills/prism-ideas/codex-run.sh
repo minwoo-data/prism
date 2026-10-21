@@ -106,7 +106,8 @@ EOF
 # placeholders, the sort stage of new_secret_in, a reclaim guard for the lock, a find failure that
 # counts as recent, an unreadable mtime that counts as old, a takeover warning in cr_exit, a
 # handler that a second signal cannot re-enter. Lines marked "prism:" are the only ones that differ
-# from triad's block: the parse-findings.js JSON. The preamble exists because of a
+# from triad's block: the parse-findings.js JSON and the angle (triad: lens) it is published for.
+# The preamble exists because of a
 # 2026-05-22 incident in which Codex ran `docker compose config` during a review and printed six
 # operator secrets into its output.
 # ======================================================================================
@@ -409,7 +410,7 @@ cr_exit() {
 # Interrupt handler: stop Codex, destroy partial output, leave the marker and its JSON. Globals
 # because a trap can fire from anywhere in cmd_lens.
 CR_CHILD=""; CR_WD=""; CR_OUT=""; CR_INCIDENT=""; CR_STREAM=""; CLEANUP_FAILED=""
-CR_NAME=""; CR_PENDING=""   # triad: the angle, for publish_json (discovery only); a signal held during the launch or the scan
+CR_NAME=""; CR_PENDING=""   # prism: the angle, for publish_json (discovery only); a signal held during the launch or the scan
 META_MODEL=default; META_EFFORT=""; META_SANDBOX=""; META_SECONDS=0
 # Codex and the watchdog run as their own process groups (set -m): a group kill reaches every
 # descendant, not just the launcher.
